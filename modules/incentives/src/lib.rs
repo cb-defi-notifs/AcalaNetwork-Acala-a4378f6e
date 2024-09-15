@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -23,7 +23,7 @@
 //! Acala platform need support different types of rewards for some other protocol.
 //! Each Pool has its own multi currencies rewards and reward accumulation
 //! mechanism. ORML rewards module records the total shares, total multi currencies rewards anduser
-//! shares of specific pool. Incentives module provides hooks to other protocals to manage shares,
+//! shares of specific pool. Incentives module provides hooks to other protocols to manage shares,
 //! accumulates rewards and distributes rewards to users based on their shares.
 //!
 //! Pool types:
@@ -39,16 +39,16 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::upper_case_acronyms)]
 
-use frame_support::{log, pallet_prelude::*, transactional, PalletId};
+use frame_support::{pallet_prelude::*, transactional, PalletId};
 use frame_system::pallet_prelude::*;
-use orml_traits::{Happened, MultiCurrency, RewardHandler};
+use module_support::{DEXIncentives, EmergencyShutdown, FractionalRate, IncentivesManager, PoolId, Rate};
+use orml_traits::{Handler, MultiCurrency, RewardHandler};
 use primitives::{Amount, Balance, CurrencyId};
 use sp_runtime::{
 	traits::{AccountIdConversion, UniqueSaturatedInto, Zero},
 	DispatchResult, FixedPointNumber,
 };
 use sp_std::{collections::btree_map::BTreeMap, prelude::*};
-use support::{DEXIncentives, EmergencyShutdown, FractionalRate, IncentivesManager, PoolId, Rate};
 
 mod mock;
 mod tests;
@@ -70,7 +70,7 @@ pub mod module {
 
 		/// The period to accumulate rewards
 		#[pallet::constant]
-		type AccumulatePeriod: Get<Self::BlockNumber>;
+		type AccumulatePeriod: Get<BlockNumberFor<Self>>;
 
 		/// The native currency for earning staking
 		#[pallet::constant]
@@ -140,6 +140,8 @@ pub mod module {
 		},
 		/// Payout deduction rate updated.
 		ClaimRewardDeductionRateUpdated { pool: PoolId, deduction_rate: Rate },
+		/// Payout deduction currency updated.
+		ClaimRewardDeductionCurrencyUpdated { pool: PoolId, currency: Option<CurrencyId> },
 	}
 
 	/// Mapping from pool to its fixed incentive amounts of multi currencies per period.
@@ -155,6 +157,12 @@ pub mod module {
 	/// ClaimRewardDeductionRates: map Pool => DeductionRate
 	#[pallet::storage]
 	pub type ClaimRewardDeductionRates<T: Config> = StorageMap<_, Twox64Concat, PoolId, FractionalRate, ValueQuery>;
+
+	/// If specified, ClaimRewardDeductionRates only apply to this currency.
+	///
+	/// ClaimRewardDeductionCurrency: map Pool => Option<RewardCurrencyId>
+	#[pallet::storage]
+	pub type ClaimRewardDeductionCurrency<T: Config> = StorageMap<_, Twox64Concat, PoolId, CurrencyId, OptionQuery>;
 
 	/// The pending rewards amount, actual available rewards amount may be deducted
 	///
@@ -176,8 +184,8 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
-		fn on_initialize(now: T::BlockNumber) -> Weight {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(now: BlockNumberFor<T>) -> Weight {
 			// accumulate reward periodically
 			if now % T::AccumulatePeriod::get() == Zero::zero() {
 				let mut count: u32 = 0;
@@ -187,15 +195,17 @@ pub mod module {
 					if !pool_info.total_shares.is_zero() {
 						match pool_id {
 							// do not accumulate incentives for PoolId::Loans after shutdown
-							PoolId::Loans(_) if !shutdown => {
+							PoolId::Loans(_) if shutdown => {
+								log::debug!(
+									target: "incentives",
+									"on_initialize: skip accumulate incentives for pool {:?} after shutdown",
+									pool_id
+								);
+							}
+							_ => {
 								count += 1;
 								Self::accumulate_incentives(pool_id);
 							}
-							PoolId::Dex(_) => {
-								count += 1;
-								Self::accumulate_incentives(pool_id);
-							}
-							_ => {}
 						}
 					}
 				}
@@ -217,7 +227,6 @@ pub mod module {
 		/// - `amount`: amount to stake
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as Config>::WeightInfo::deposit_dex_share())]
-		#[transactional]
 		pub fn deposit_dex_share(
 			origin: OriginFor<T>,
 			lp_currency_id: CurrencyId,
@@ -236,7 +245,6 @@ pub mod module {
 		/// - `amount`: amount to unstake
 		#[pallet::call_index(1)]
 		#[pallet::weight(<T as Config>::WeightInfo::withdraw_dex_share())]
-		#[transactional]
 		pub fn withdraw_dex_share(
 			origin: OriginFor<T>,
 			lp_currency_id: CurrencyId,
@@ -247,14 +255,13 @@ pub mod module {
 			Ok(())
 		}
 
-		/// Claim all avalible multi currencies rewards for specific PoolId.
+		/// Claim all available multi currencies rewards for specific PoolId.
 		///
 		/// The dispatch origin of this call must be `Signed` by the transactor.
 		///
 		/// - `pool_id`: pool type
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::claim_rewards())]
-		#[transactional]
 		pub fn claim_rewards(origin: OriginFor<T>, pool_id: PoolId) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -270,7 +277,6 @@ pub mod module {
 		#[pallet::weight(<T as Config>::WeightInfo::update_incentive_rewards(
 			updates.iter().fold(0, |count, x| count + x.1.len()) as u32
 		))]
-		#[transactional]
 		pub fn update_incentive_rewards(
 			origin: OriginFor<T>,
 			updates: Vec<(PoolId, Vec<(CurrencyId, Balance)>)>,
@@ -311,7 +317,6 @@ pub mod module {
 		/// - `updates`: Vec<(PoolId, DecutionRate>)>
 		#[pallet::call_index(4)]
 		#[pallet::weight(<T as Config>::WeightInfo::update_claim_reward_deduction_rates(updates.len() as u32))]
-		#[transactional]
 		pub fn update_claim_reward_deduction_rates(
 			origin: OriginFor<T>,
 			updates: Vec<(PoolId, Rate)>,
@@ -339,6 +344,25 @@ pub mod module {
 					Ok(())
 				})?;
 			}
+			Ok(())
+		}
+
+		/// Update claim rewards deduction rates currency
+		///
+		/// The dispatch origin of this call must be `UpdateOrigin`.
+		#[pallet::call_index(5)]
+		#[pallet::weight(<T as Config>::WeightInfo::update_claim_reward_deduction_currency())]
+		pub fn update_claim_reward_deduction_currency(
+			origin: OriginFor<T>,
+			pool_id: PoolId,
+			currency_id: Option<CurrencyId>,
+		) -> DispatchResult {
+			T::UpdateOrigin::ensure_origin(origin)?;
+			ClaimRewardDeductionCurrency::<T>::mutate_exists(pool_id, |c| *c = currency_id);
+			Self::deposit_event(Event::ClaimRewardDeductionCurrencyUpdated {
+				pool: pool_id,
+				currency: currency_id,
+			});
 			Ok(())
 		}
 	}
@@ -396,11 +420,24 @@ impl<T: Config> Pallet<T> {
 		PendingMultiRewards::<T>::mutate_exists(pool_id, &who, |maybe_pending_multi_rewards| {
 			if let Some(pending_multi_rewards) = maybe_pending_multi_rewards {
 				let deduction_rate = Self::claim_reward_deduction_rates(&pool_id);
+				let deduction_currency = ClaimRewardDeductionCurrency::<T>::get(pool_id);
 
 				for (currency_id, pending_reward) in pending_multi_rewards.iter_mut() {
 					if pending_reward.is_zero() {
 						continue;
 					}
+
+					let deduction_rate = if let Some(deduction_currency) = deduction_currency {
+						// only apply deduction rate to specified currency
+						if deduction_currency == *currency_id {
+							deduction_rate
+						} else {
+							Zero::zero()
+						}
+					} else {
+						// apply deduction rate to all currencies
+						deduction_rate
+					};
 
 					let (payout_amount, deduction_amount) = {
 						let should_deduction_amount = deduction_rate.saturating_mul_int(*pending_reward);
@@ -475,7 +512,7 @@ impl<T: Config> DEXIncentives<T::AccountId, CurrencyId, Balance> for Pallet<T> {
 		ensure!(lp_currency_id.is_dex_share_currency_id(), Error::<T>::InvalidCurrencyId);
 
 		T::Currency::transfer(lp_currency_id, who, &Self::account_id(), amount)?;
-		<orml_rewards::Pallet<T>>::add_share(who, &PoolId::Dex(lp_currency_id), amount.unique_saturated_into());
+		<orml_rewards::Pallet<T>>::add_share(who, &PoolId::Dex(lp_currency_id), amount.unique_saturated_into())?;
 
 		Self::deposit_event(Event::DepositDexShare {
 			who: who.clone(),
@@ -493,7 +530,7 @@ impl<T: Config> DEXIncentives<T::AccountId, CurrencyId, Balance> for Pallet<T> {
 		);
 
 		T::Currency::transfer(lp_currency_id, &Self::account_id(), who, amount)?;
-		<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::Dex(lp_currency_id), amount.unique_saturated_into());
+		<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::Dex(lp_currency_id), amount.unique_saturated_into())?;
 
 		Self::deposit_event(Event::WithdrawDexShare {
 			who: who.clone(),
@@ -537,16 +574,16 @@ impl<T: Config> IncentivesManager<T::AccountId, Balance, CurrencyId, PoolId> for
 }
 
 pub struct OnUpdateLoan<T>(sp_std::marker::PhantomData<T>);
-impl<T: Config> Happened<(T::AccountId, CurrencyId, Amount, Balance)> for OnUpdateLoan<T> {
-	fn happened(info: &(T::AccountId, CurrencyId, Amount, Balance)) {
+impl<T: Config> Handler<(T::AccountId, CurrencyId, Amount, Balance)> for OnUpdateLoan<T> {
+	fn handle(info: &(T::AccountId, CurrencyId, Amount, Balance)) -> DispatchResult {
 		let (who, currency_id, adjustment, _previous_amount) = info;
 		let adjustment_abs = TryInto::<Balance>::try_into(adjustment.saturating_abs()).unwrap_or_default();
 
 		if adjustment.is_positive() {
-			<orml_rewards::Pallet<T>>::add_share(who, &PoolId::Loans(*currency_id), adjustment_abs);
+			<orml_rewards::Pallet<T>>::add_share(who, &PoolId::Loans(*currency_id), adjustment_abs)
 		} else {
-			<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::Loans(*currency_id), adjustment_abs);
-		};
+			<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::Loans(*currency_id), adjustment_abs)
+		}
 	}
 }
 
@@ -568,15 +605,29 @@ impl<T: Config> RewardHandler<T::AccountId, CurrencyId> for Pallet<T> {
 }
 
 pub struct OnEarningBonded<T>(sp_std::marker::PhantomData<T>);
-impl<T: Config> Happened<(T::AccountId, Balance)> for OnEarningBonded<T> {
-	fn happened((who, amount): &(T::AccountId, Balance)) {
-		<orml_rewards::Pallet<T>>::add_share(who, &PoolId::Earning(T::NativeCurrencyId::get()), *amount);
+impl<T: Config> Handler<(T::AccountId, Balance)> for OnEarningBonded<T> {
+	fn handle((who, amount): &(T::AccountId, Balance)) -> DispatchResult {
+		<orml_rewards::Pallet<T>>::add_share(who, &PoolId::Earning(T::NativeCurrencyId::get()), *amount)
 	}
 }
 
 pub struct OnEarningUnbonded<T>(sp_std::marker::PhantomData<T>);
-impl<T: Config> Happened<(T::AccountId, Balance)> for OnEarningUnbonded<T> {
-	fn happened((who, amount): &(T::AccountId, Balance)) {
-		<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::Earning(T::NativeCurrencyId::get()), *amount);
+impl<T: Config> Handler<(T::AccountId, Balance)> for OnEarningUnbonded<T> {
+	fn handle((who, amount): &(T::AccountId, Balance)) -> DispatchResult {
+		<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::Earning(T::NativeCurrencyId::get()), *amount)
+	}
+}
+
+pub struct OnNomineesElectionBonded<T>(sp_std::marker::PhantomData<T>);
+impl<T: Config> Handler<(T::AccountId, Balance)> for OnNomineesElectionBonded<T> {
+	fn handle((who, amount): &(T::AccountId, Balance)) -> DispatchResult {
+		<orml_rewards::Pallet<T>>::add_share(who, &PoolId::NomineesElection, *amount)
+	}
+}
+
+pub struct OnNomineesElectionUnbonded<T>(sp_std::marker::PhantomData<T>);
+impl<T: Config> Handler<(T::AccountId, Balance)> for OnNomineesElectionUnbonded<T> {
+	fn handle((who, amount): &(T::AccountId, Balance)) -> DispatchResult {
+		<orml_rewards::Pallet<T>>::remove_share(who, &PoolId::NomineesElection, *amount)
 	}
 }

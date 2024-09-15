@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use codec::{Decode, Encode};
+use parity_scale_codec::{Decode, Encode};
 use primitives::currency::AssetIds;
 use primitives::{
 	evm::{CallInfo, EvmAddress},
@@ -190,7 +190,7 @@ pub trait EVMManager<AccountId, Balance> {
 	/// Query the constants `StorageDepositPerByte` value from evm module.
 	fn query_storage_deposit_per_byte() -> Balance;
 	/// Query the maintainer address from the ERC20 contract.
-	fn query_maintainer(contract: H160) -> Result<H160, DispatchError>;
+	fn query_maintainer(contract: &H160) -> Result<H160, DispatchError>;
 	/// Query the constants `DeveloperDeposit` value from evm module.
 	fn query_developer_deposit() -> Balance;
 	/// Query the constants `PublicationFee` value from evm module.
@@ -200,11 +200,11 @@ pub trait EVMManager<AccountId, Balance> {
 	/// Publish contract
 	fn publish_contract_precompile(who: AccountId, contract: H160) -> DispatchResult;
 	/// Query the developer status of an account
-	fn query_developer_status(who: AccountId) -> bool;
+	fn query_developer_status(who: &AccountId) -> bool;
 	/// Enable developer mode
-	fn enable_account_contract_development(who: AccountId) -> DispatchResult;
+	fn enable_account_contract_development(who: &AccountId) -> DispatchResult;
 	/// Disable developer mode
-	fn disable_account_contract_development(who: AccountId) -> DispatchResult;
+	fn disable_account_contract_development(who: &AccountId) -> DispatchResult;
 }
 
 /// An abstraction of EVMAccountsManager
@@ -239,13 +239,13 @@ pub trait AddressMapping<AccountId> {
 }
 
 /// A mapping between AssetId and AssetMetadata.
-pub trait AssetIdMapping<ForeignAssetId, MultiLocation, AssetMetadata> {
+pub trait AssetIdMapping<ForeignAssetId, Location, AssetMetadata> {
 	/// Returns the AssetMetadata associated with a given `AssetIds`.
 	fn get_asset_metadata(asset_ids: AssetIds) -> Option<AssetMetadata>;
 	/// Returns the MultiLocation associated with a given ForeignAssetId.
-	fn get_multi_location(foreign_asset_id: ForeignAssetId) -> Option<MultiLocation>;
+	fn get_location(foreign_asset_id: ForeignAssetId) -> Option<Location>;
 	/// Returns the CurrencyId associated with a given MultiLocation.
-	fn get_currency_id(multi_location: MultiLocation) -> Option<CurrencyId>;
+	fn get_currency_id(location: Location) -> Option<CurrencyId>;
 }
 
 /// A mapping between u32 and Erc20 address.

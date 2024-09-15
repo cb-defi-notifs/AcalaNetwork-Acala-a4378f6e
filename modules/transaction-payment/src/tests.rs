@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -27,10 +27,11 @@ use frame_support::{
 	dispatch::{DispatchClass, DispatchInfo, Pays},
 };
 use mock::{
-	AccountId, BlockWeights, Currencies, DEXModule, ExtBuilder, FeePoolSize, MockPriceSource, Runtime, RuntimeCall,
-	RuntimeOrigin, System, TransactionPayment, ACA, ALICE, AUSD, BOB, CHARLIE, DAVE, DOT, FEE_UNBALANCED_AMOUNT, LDOT,
-	TIP_UNBALANCED_AMOUNT,
+	AccountId, BlockWeights, Currencies, DEXModule, ExtBuilder, FeePoolSize, FeeUnbalancedAmount, MockPriceSource,
+	Runtime, RuntimeCall, RuntimeOrigin, System, TipUnbalancedAmount, TransactionPayment, ACA, ALICE, AUSD, BOB,
+	CHARLIE, DAVE, DOT, LDOT,
 };
+use module_support::{BuyWeightRate, DEXManager, Price, TransactionPayment as TransactionPaymentT};
 use orml_traits::{MultiCurrency, MultiLockableCurrency};
 use pallet_balances::ReserveData;
 use primitives::currency::*;
@@ -39,8 +40,7 @@ use sp_runtime::{
 	testing::TestXt,
 	traits::{One, UniqueSaturatedInto},
 };
-use support::{BuyWeightRate, DEXManager, Price, TransactionPayment as TransactionPaymentT};
-use xcm::v3::prelude::*;
+use xcm::v4::prelude::*;
 
 const CALL: <Runtime as frame_system::Config>::RuntimeCall =
 	RuntimeCall::Currencies(module_currencies::Call::transfer {
@@ -88,16 +88,6 @@ fn with_fee_currency_call(currency_id: CurrencyId) -> <Runtime as Config>::Runti
 		RuntimeCall::TransactionPayment(crate::mock::transaction_payment::Call::with_fee_currency {
 			currency_id,
 			call: Box::new(CALL),
-		});
-	fee_call
-}
-
-fn with_fee_paid_by_call(payer_addr: AccountId, payer_sig: MultiSignature) -> <Runtime as Config>::RuntimeCall {
-	let fee_call: <Runtime as Config>::RuntimeCall =
-		RuntimeCall::TransactionPayment(crate::mock::transaction_payment::Call::with_fee_paid_by {
-			call: Box::new(CALL),
-			payer_addr,
-			payer_sig,
 		});
 	fee_call
 }
@@ -320,8 +310,8 @@ fn pre_post_dispatch_and_refund_native_is_enough() {
 
 		let refund = 200; // 1000 - 800
 		assert_eq!(Currencies::free_balance(ACA, &ALICE), 100000 - fee + refund);
-		assert_eq!(FEE_UNBALANCED_AMOUNT.with(|a| *a.borrow()), fee - refund);
-		assert_eq!(TIP_UNBALANCED_AMOUNT.with(|a| *a.borrow()), 0);
+		assert_eq!(FeeUnbalancedAmount::get(), fee - refund);
+		assert_eq!(TipUnbalancedAmount::get(), 0);
 
 		System::assert_has_event(crate::mock::RuntimeEvent::TransactionPayment(
 			crate::Event::TransactionFeePaid {
@@ -333,7 +323,7 @@ fn pre_post_dispatch_and_refund_native_is_enough() {
 		));
 
 		// reset and test refund with tip
-		FEE_UNBALANCED_AMOUNT.with(|a| *a.borrow_mut() = 0);
+		FeeUnbalancedAmount::mutate(|a| *a = 0);
 
 		let tip: Balance = 5;
 		let pre = ChargeTransactionPayment::<Runtime>::from(tip)
@@ -350,8 +340,8 @@ fn pre_post_dispatch_and_refund_native_is_enough() {
 			&Ok(())
 		));
 		assert_eq!(Currencies::free_balance(ACA, &CHARLIE), 100000 - fee - tip + refund);
-		assert_eq!(FEE_UNBALANCED_AMOUNT.with(|a| *a.borrow()), fee - refund);
-		assert_eq!(TIP_UNBALANCED_AMOUNT.with(|a| *a.borrow()), tip);
+		assert_eq!(FeeUnbalancedAmount::get(), fee - refund);
+		assert_eq!(TipUnbalancedAmount::get(), tip);
 
 		System::assert_has_event(crate::mock::RuntimeEvent::TransactionPayment(
 			crate::Event::TransactionFeePaid {
@@ -403,6 +393,12 @@ fn pre_post_dispatch_and_refund_with_fee_currency_call(token: CurrencyId, surplu
 		assert_eq!(pre.2, Some(pallet_balances::NegativeImbalance::new(fee_surplus)));
 		assert_eq!(pre.3, fee_surplus);
 
+		// with_fee_currency will set OverrideChargeFeeMethod when pre_dispatch
+		assert_eq!(
+			OverrideChargeFeeMethod::<Runtime>::get(),
+			Some(ChargeFeeMethod::FeeCurrency(token))
+		);
+
 		let token_transfer = token_rate.saturating_mul_int(fee_surplus);
 		System::assert_has_event(crate::mock::RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
 			currency_id: token,
@@ -432,6 +428,9 @@ fn pre_post_dispatch_and_refund_with_fee_currency_call(token: CurrencyId, surplu
 			&Ok(())
 		));
 
+		// always clear OverrideChargeFeeMethod when post_dispatch
+		assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
+
 		let refund = 200; // 1000 - 800
 		let refund_surplus = surplus_percent.mul_ceil(refund);
 		let actual_surplus = surplus - refund_surplus;
@@ -439,11 +438,8 @@ fn pre_post_dispatch_and_refund_with_fee_currency_call(token: CurrencyId, surplu
 			Currencies::free_balance(ACA, &ALICE),
 			aca_init + refund + refund_surplus
 		);
-		assert_eq!(
-			FEE_UNBALANCED_AMOUNT.with(|a| *a.borrow()),
-			fee - refund + actual_surplus
-		);
-		assert_eq!(TIP_UNBALANCED_AMOUNT.with(|a| *a.borrow()), 0);
+		assert_eq!(FeeUnbalancedAmount::get(), fee - refund + actual_surplus);
+		assert_eq!(TipUnbalancedAmount::get(), 0);
 
 		System::assert_has_event(crate::mock::RuntimeEvent::TransactionPayment(
 			crate::Event::TransactionFeePaid {
@@ -455,7 +451,7 @@ fn pre_post_dispatch_and_refund_with_fee_currency_call(token: CurrencyId, surplu
 		));
 
 		// reset and test refund with tip
-		FEE_UNBALANCED_AMOUNT.with(|a| *a.borrow_mut() = 0);
+		FeeUnbalancedAmount::mutate(|a| *a = 0);
 
 		assert_ok!(Currencies::update_balance(
 			RuntimeOrigin::root(),
@@ -475,6 +471,13 @@ fn pre_post_dispatch_and_refund_with_fee_currency_call(token: CurrencyId, surplu
 			.unwrap();
 		assert_eq!(pre.2, Some(pallet_balances::NegativeImbalance::new(fee_surplus)));
 		assert_eq!(pre.3, fee_surplus);
+
+		// with_fee_currency will set OverrideChargeFeeMethod when pre_dispatch
+		assert_eq!(
+			OverrideChargeFeeMethod::<Runtime>::get(),
+			Some(ChargeFeeMethod::FeeCurrency(token))
+		);
+
 		System::assert_has_event(crate::mock::RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
 			currency_id: token,
 			from: CHARLIE,
@@ -499,15 +502,16 @@ fn pre_post_dispatch_and_refund_with_fee_currency_call(token: CurrencyId, surplu
 			500,
 			&Ok(())
 		));
+
+		// always clear OverrideChargeFeeMethod when post_dispatch
+		assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
+
 		assert_eq!(
 			Currencies::free_balance(ACA, &CHARLIE),
 			aca_init + refund + refund_surplus
 		);
-		assert_eq!(
-			FEE_UNBALANCED_AMOUNT.with(|a| *a.borrow()),
-			fee - refund + surplus - refund_surplus
-		);
-		assert_eq!(TIP_UNBALANCED_AMOUNT.with(|a| *a.borrow()), tip);
+		assert_eq!(FeeUnbalancedAmount::get(), fee - refund + surplus - refund_surplus);
+		assert_eq!(TipUnbalancedAmount::get(), tip);
 
 		System::assert_has_event(crate::mock::RuntimeEvent::TransactionPayment(
 			crate::Event::TransactionFeePaid {
@@ -879,52 +883,6 @@ fn charges_fee_when_validate_with_fee_currency_call_use_pool() {
 }
 
 #[test]
-fn charges_fee_when_validate_with_fee_paid_by_native_token() {
-	// Enable dex with Alice, and initialize tx charge fee pool
-	builder_with_dex_and_fee_pool(true).execute_with(|| {
-		// make a fake signature
-		let signature = MultiSignature::Sr25519(sp_core::sr25519::Signature([0u8; 64]));
-		// payer has enough native asset
-		assert_ok!(Currencies::update_balance(RuntimeOrigin::root(), BOB, ACA, 500,));
-
-		let fee: Balance = 50 * 2 + 100;
-		assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).validate(
-			&ALICE,
-			&with_fee_paid_by_call(BOB, signature),
-			&INFO2,
-			50
-		));
-		assert_eq!(500 - fee, Currencies::free_balance(ACA, &BOB));
-	});
-}
-
-#[test]
-fn charges_fee_when_validate_with_fee_paid_by_default_token() {
-	// Enable dex with Alice, and initialize tx charge fee pool
-	builder_with_dex_and_fee_pool(true).execute_with(|| {
-		let ausd_acc = Pallet::<Runtime>::sub_account_id(AUSD);
-		assert_eq!(100, Currencies::free_balance(AUSD, &ausd_acc));
-		assert_eq!(10000, Currencies::free_balance(ACA, &ausd_acc));
-
-		// make a fake signature
-		let signature = MultiSignature::Sr25519(sp_core::sr25519::Signature([0u8; 64]));
-		// payer has enough native asset
-		assert_ok!(Currencies::update_balance(RuntimeOrigin::root(), BOB, AUSD, 5000,));
-
-		assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).validate(
-			&ALICE,
-			&with_fee_paid_by_call(BOB, signature),
-			&INFO2,
-			50
-		));
-		assert_eq!(2700, Currencies::free_balance(AUSD, &ausd_acc));
-		assert_eq!(9740, Currencies::free_balance(ACA, &ausd_acc));
-		assert_eq!(2400, Currencies::free_balance(AUSD, &BOB));
-		assert_eq!(10, Currencies::free_balance(ACA, &BOB));
-	});
-}
-
-#[test]
 fn charges_fee_when_validate_and_native_is_not_enough() {
 	// Enable dex with Alice, and initialize tx charge fee pool
 	builder_with_dex_and_fee_pool(true).execute_with(|| {
@@ -1288,7 +1246,7 @@ fn query_info_works() {
 		.weight_fee(2)
 		.build()
 		.execute_with(|| {
-			let call = RuntimeCall::PalletBalances(pallet_balances::Call::transfer {
+			let call = RuntimeCall::PalletBalances(pallet_balances::Call::transfer_allow_death {
 				dest: AccountId::new([2u8; 32]),
 				value: 69,
 			});
@@ -1633,24 +1591,23 @@ fn max_tip_has_same_priority() {
 }
 
 struct CurrencyIdConvert;
-impl Convert<MultiLocation, Option<CurrencyId>> for CurrencyIdConvert {
-	fn convert(location: MultiLocation) -> Option<CurrencyId> {
+impl Convert<Location, Option<CurrencyId>> for CurrencyIdConvert {
+	fn convert(location: Location) -> Option<CurrencyId> {
 		use CurrencyId::Token;
 		use TokenSymbol::*;
 
-		if location == MultiLocation::parent() {
+		if location == Location::parent() {
 			return Some(Token(DOT));
 		}
 
-		match location {
-			MultiLocation {
-				interior: X1(GeneralKey { data, length }),
-				..
-			} => {
-				let key = &data[..data.len().min(length as usize)];
-				CurrencyId::decode(&mut &*key).ok()
-			}
-			_ => None,
+		match location.unpack() {
+			(_parents, interior) => match interior {
+				[GeneralKey { data, length }] => {
+					let key = &data[..data.len().min(*length as usize)];
+					CurrencyId::decode(&mut &*key).ok()
+				}
+				_ => None,
+			},
 		}
 	}
 }
@@ -1659,22 +1616,19 @@ impl Convert<MultiLocation, Option<CurrencyId>> for CurrencyIdConvert {
 fn buy_weight_transaction_fee_pool_works() {
 	builder_with_dex_and_fee_pool(true).execute_with(|| {
 		// Location convert return None.
-		let location = MultiLocation::new(1, X1(Junction::Parachain(2000)));
+		let location = Location::new(1, Junction::Parachain(2000));
 		let rate = <BuyWeightRateOfTransactionFeePool<Runtime, CurrencyIdConvert>>::calculate_rate(location);
 		assert_eq!(rate, None);
 
 		// Token not in charge fee pool
 		let currency_id = CurrencyId::Token(TokenSymbol::LDOT);
 
-		let location = MultiLocation::new(
-			1,
-			X1(Junction::from(BoundedVec::try_from(currency_id.encode()).unwrap())),
-		);
+		let location = Location::new(1, Junction::from(BoundedVec::try_from(currency_id.encode()).unwrap()));
 		let rate = <BuyWeightRateOfTransactionFeePool<Runtime, CurrencyIdConvert>>::calculate_rate(location);
 		assert_eq!(rate, None);
 
 		// DOT Token is in charge fee pool.
-		let location = MultiLocation::parent();
+		let location = Location::parent();
 		let rate = <BuyWeightRateOfTransactionFeePool<Runtime, CurrencyIdConvert>>::calculate_rate(location);
 		assert_eq!(rate, Some(Ratio::saturating_from_rational(1, 10)));
 	});
@@ -2189,19 +2143,54 @@ fn with_fee_call_validation_works() {
 		.one_hundred_thousand_for_alice_n_charlie()
 		.build()
 		.execute_with(|| {
+			assert_ok!(Currencies::update_balance(
+				RuntimeOrigin::root(),
+				CHARLIE,
+				AUSD,
+				1000000,
+			));
+			assert_ok!(Currencies::update_balance(RuntimeOrigin::root(), CHARLIE, DOT, 1000000,));
+			assert_ok!(Currencies::update_balance(
+				RuntimeOrigin::root(),
+				CHARLIE,
+				LDOT,
+				1000000,
+			));
+			assert_eq!(1000000, Currencies::free_balance(AUSD, &CHARLIE));
+			assert_eq!(1000000, Currencies::free_balance(DOT, &CHARLIE));
+			assert_eq!(1000000, Currencies::free_balance(LDOT, &CHARLIE));
+
+			assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
+
+			// CHARLIE has enough native token, default charge fee succeed
+			assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(&CHARLIE, &CALL, &INFO, 10));
+			// default charge fee will not set OverrideChargeFeeMethod
+			assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
+
+			// BOB has not enough native token, default charge fee fail
+			assert_noop!(
+				ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(&BOB, &CALL, &INFO, 10),
+				TransactionValidityError::Invalid(InvalidTransaction::Payment)
+			);
+
 			// dex swap not enabled, validate failed.
 			// with_fee_currency test
 			for token in vec![DOT, AUSD] {
 				assert_noop!(
 					ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
-						&ALICE,
+						&CHARLIE,
 						&with_fee_currency_call(token),
 						&INFO,
-						500
+						10
 					),
 					TransactionValidityError::Invalid(InvalidTransaction::Payment)
 				);
+
+				// ensure_can_charge_fee_with_call failed, dot not set OverrideChargeFeeMethod
+				assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
 			}
+
+			// test the wrapped call by with_fee_currency
 			assert_ok!(TransactionPayment::with_fee_currency(
 				RuntimeOrigin::signed(ALICE),
 				DOT,
@@ -2214,52 +2203,129 @@ fn with_fee_call_validation_works() {
 			for path in vec![vec![DOT, AUSD, ACA], vec![AUSD, ACA]] {
 				assert_noop!(
 					ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
-						&ALICE,
-						&with_fee_path_call(path),
+						&CHARLIE,
+						&with_fee_path_call(path.clone()),
 						&INFO,
-						500
+						10
 					),
 					TransactionValidityError::Invalid(InvalidTransaction::Payment)
 				);
+
+				// ensure_can_charge_fee_with_call failed, dot not set OverrideChargeFeeMethod
+				assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
 			}
-			assert_ok!(TransactionPayment::with_fee_currency(
+
+			// test the wrapped call by with_fee_currency
+			assert_ok!(TransactionPayment::with_fee_path(
 				RuntimeOrigin::signed(ALICE),
-				DOT,
+				vec![DOT, AUSD, ACA],
 				Box::new(CALL),
 			));
 			assert_eq!(9800, Currencies::free_balance(AUSD, &ALICE));
 			assert_eq!(200, Currencies::free_balance(AUSD, &BOB));
 
-			// with_fee_aggregated_path
+			// with_fee_aggregated_path test
 			let aggregated_path = vec![AggregatedSwapPath::Dex(vec![DOT, AUSD])];
 			assert_noop!(
 				ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
 					&ALICE,
-					&with_fee_aggregated_path_by_call(aggregated_path),
+					&with_fee_aggregated_path_by_call(aggregated_path.clone()),
 					&INFO,
-					500
+					10
 				),
 				TransactionValidityError::Invalid(InvalidTransaction::Payment)
 			);
+
 			let aggregated_path = vec![AggregatedSwapPath::Dex(vec![DOT, ACA])];
 			assert_noop!(
 				ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
-					&ALICE,
-					&with_fee_aggregated_path_by_call(aggregated_path),
+					&CHARLIE,
+					&with_fee_aggregated_path_by_call(aggregated_path.clone()),
 					&INFO,
-					500
+					10
 				),
 				TransactionValidityError::Invalid(InvalidTransaction::Payment)
 			);
+			// ensure_can_charge_fee_with_call failed, dot not set OverrideChargeFeeMethod
+			assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
+
 			let aggregated_path = vec![AggregatedSwapPath::Taiga(0, 0, 0)];
 			assert_noop!(
 				ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
-					&ALICE,
-					&with_fee_aggregated_path_by_call(aggregated_path),
+					&CHARLIE,
+					&with_fee_aggregated_path_by_call(aggregated_path.clone()),
 					&INFO,
-					500
+					10
 				),
 				TransactionValidityError::Invalid(InvalidTransaction::Payment)
+			);
+			// ensure_can_charge_fee_with_call failed, dot not set OverrideChargeFeeMethod
+			assert_eq!(OverrideChargeFeeMethod::<Runtime>::get(), None);
+
+			// test the wrapped call by with_fee_aggregated_path
+			assert_ok!(TransactionPayment::with_fee_aggregated_path(
+				RuntimeOrigin::signed(ALICE),
+				aggregated_path,
+				Box::new(CALL),
+			));
+			assert_eq!(9700, Currencies::free_balance(AUSD, &ALICE));
+			assert_eq!(300, Currencies::free_balance(AUSD, &BOB));
+
+			// enable dex and enable AUSD, DOT as fee pool
+			enable_dex_and_tx_fee_pool();
+
+			// with_fee_currency test
+			for token in vec![DOT, AUSD] {
+				assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
+					&CHARLIE,
+					&with_fee_currency_call(token),
+					&INFO,
+					10
+				));
+
+				// OverrideChargeFeeMethod will be set
+				assert_eq!(
+					OverrideChargeFeeMethod::<Runtime>::get(),
+					Some(ChargeFeeMethod::FeeCurrency(token))
+				);
+			}
+
+			// LDOT is not enabled fee pool, cannot charge fee by with_fee_currency
+			assert_noop!(
+				ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
+					&CHARLIE,
+					&with_fee_currency_call(LDOT),
+					&INFO,
+					10
+				),
+				TransactionValidityError::Invalid(InvalidTransaction::Payment)
+			);
+
+			for path in vec![vec![DOT, AUSD, ACA], vec![AUSD, ACA]] {
+				assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
+					&CHARLIE,
+					&with_fee_path_call(path.clone()),
+					&INFO,
+					10
+				));
+
+				// OverrideChargeFeeMethod will be set
+				assert_eq!(
+					OverrideChargeFeeMethod::<Runtime>::get(),
+					Some(ChargeFeeMethod::FeeAggregatedPath(vec![AggregatedSwapPath::Dex(path)]))
+				);
+			}
+
+			let aggregated_path = vec![AggregatedSwapPath::Dex(vec![DOT, AUSD, ACA])];
+			assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).pre_dispatch(
+				&CHARLIE,
+				&with_fee_aggregated_path_by_call(aggregated_path.clone()),
+				&INFO,
+				10
+			));
+			assert_eq!(
+				OverrideChargeFeeMethod::<Runtime>::get(),
+				Some(ChargeFeeMethod::FeeAggregatedPath(aggregated_path))
 			);
 		});
 }

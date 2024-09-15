@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{AccountId, ActiveSubAccountsIndexList, Balance, Currencies, Homa, Rate, RelaychainDataProvider, Runtime};
+use crate::{
+	AccountId, ActiveSubAccountsIndexList, Balance, Currencies, Homa, Rate, RedeemThreshold, RelaychainDataProvider,
+	Runtime,
+};
 
 use super::utils::{set_balance, LIQUID, STAKING};
 use frame_benchmarking::{account, whitelisted_caller};
@@ -39,29 +42,43 @@ runtime_benchmarks! {
 	}
 
 	on_initialize_with_bump_era {
+		let n in 1 .. 50;
 		let minter: AccountId = account("minter", 0, SEED);
-		let redeemer: AccountId = account("redeemer", 0, SEED);
 		let sub_account_index = ActiveSubAccountsIndexList::get().first().unwrap().clone();
 
 		set_balance(STAKING, &minter, 1_000_000_000_000_000);
-		set_balance(LIQUID, &redeemer, 1_000_000_000_000_000 * 10);
+
+		for i in 0 .. n {
+			let redeemer = account("redeemer", i, SEED);
+			set_balance(LIQUID, &redeemer, 1_000_000_000_000_000);
+		}
+
+		// need to process unlocking
 		Homa::reset_ledgers(
 			RawOrigin::Root.into(),
 			vec![(sub_account_index, Some(1_000_000_000_000_000), Some(vec![UnlockChunk{value: 1_000_000_000_000, era: 10}]))]
 		)?;
 		Homa::reset_current_era(RawOrigin::Root.into(), 9)?;
+
 		Homa::update_homa_params(
 			RawOrigin::Root.into(),
 			Some(10_000_000_000_000_000),
 			Some(Rate::saturating_from_rational(1, 100)),
 			Some(Rate::saturating_from_rational(20, 100)),
 			None,
+			None,
 		)?;
 		RelaychainDataProvider::<Runtime>::set_block_number(10);
 		Homa::update_bump_era_params(RawOrigin::Root.into(), None, Some(1))?;
 
+		// need to process to bond
 		Homa::mint(RawOrigin::Signed(minter).into(), 100_000_000_000_000)?;
-		Homa::request_redeem(RawOrigin::Signed(redeemer).into(), 5_000_000_000_000_000, true)?;
+
+		// need to process redeem request
+		for i in 0 .. n {
+			let redeemer = account("redeemer", i, SEED);
+			Homa::request_redeem(RawOrigin::Signed(redeemer).into(), 100_000_000_000_000, false)?;
+		}
 	}: {
 		Homa::on_initialize(1)
 	}
@@ -74,6 +91,7 @@ runtime_benchmarks! {
 			RawOrigin::Root.into(),
 			Some(amount * 10),
 			Some(Rate::saturating_from_rational(1, 10000)),
+			None,
 			None,
 			None,
 		)?;
@@ -98,6 +116,7 @@ runtime_benchmarks! {
 			RawOrigin::Root.into(),
 			Some(mint_amount * 10),
 			Some(Rate::saturating_from_rational(1, 10000)),
+			None,
 			None,
 			None,
 		)?;
@@ -129,7 +148,9 @@ runtime_benchmarks! {
 		Some(1_000_000_000_000),
 		Some(Rate::saturating_from_rational(1, 100)),
 		Some(Rate::saturating_from_rational(1, 100)),
-		Some(Rate::saturating_from_rational(1, 100)))
+		Some(Rate::saturating_from_rational(1, 100)),
+		Some(7)
+	)
 
 	update_bump_era_params {
 		RelaychainDataProvider::<Runtime>::set_block_number(10000);

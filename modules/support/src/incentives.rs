@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -17,7 +17,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::Rate;
-use codec::{Decode, Encode};
+use parity_scale_codec::{Decode, Encode};
 use primitives::CurrencyId;
 use scale_info::TypeInfo;
 use sp_runtime::{DispatchResult, RuntimeDebug};
@@ -34,6 +34,9 @@ pub enum PoolId {
 
 	/// Rewards and shares pool for earning module
 	Earning(CurrencyId),
+
+	/// Rewards and shares pool for Homa nominees election
+	NomineesElection,
 }
 
 pub trait IncentivesManager<AccountId, Balance, CurrencyId, PoolId> {

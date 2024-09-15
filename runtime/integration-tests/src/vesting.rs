@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -29,11 +29,10 @@ fn test_vesting_use_relaychain_block_number() {
 		#[cfg(feature = "with-acala-runtime")]
 		let signer: AccountId = AcalaFoundationAccounts::get()[0].clone();
 
-		assert_ok!(Balances::set_balance_deprecated(
+		assert_ok!(Balances::force_set_balance(
 			RuntimeOrigin::root(),
 			signer.clone().into(),
 			1_000 * dollar(ACA),
-			0
 		));
 
 		assert_ok!(Vesting::vested_transfer(

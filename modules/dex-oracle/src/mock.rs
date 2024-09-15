@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -21,23 +21,17 @@
 #![cfg(test)]
 
 use super::*;
-use frame_support::{
-	construct_runtime, ord_parameter_types, parameter_types,
-	traits::{ConstU64, Everything},
-};
+use frame_support::{construct_runtime, derive_impl, ord_parameter_types, parameter_types, traits::ConstU64};
 use frame_system::EnsureSignedBy;
+use module_support::SwapLimit;
 use primitives::{DexShare, Moment, TokenSymbol};
-use sp_core::{H160, H256};
+use sp_core::H160;
 use sp_runtime::{
-	testing::Header,
 	traits::{IdentityLookup, Zero},
-	DispatchError,
+	BuildStorage, DispatchError,
 };
-use sp_std::cell::RefCell;
-use support::SwapLimit;
 
 pub type AccountId = u128;
-pub type BlockNumber = u64;
 
 pub const ACA: CurrencyId = CurrencyId::Token(TokenSymbol::ACA);
 pub const AUSD: CurrencyId = CurrencyId::Token(TokenSymbol::AUSD);
@@ -54,31 +48,12 @@ parameter_types! {
 	pub static ACADOTPair: TradingPair = TradingPair::from_currency_ids(ACA, DOT).unwrap();
 }
 
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig as frame_system::DefaultConfig)]
 impl frame_system::Config for Runtime {
-	type RuntimeOrigin = RuntimeOrigin;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type RuntimeCall = RuntimeCall;
-	type Hash = H256;
-	type Hashing = ::sp_runtime::traits::BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
-	type RuntimeEvent = RuntimeEvent;
-	type BlockHashCount = ConstU64<250>;
-	type BlockWeights = ();
-	type BlockLength = ();
-	type Version = ();
-	type PalletInfo = PalletInfo;
+	type Block = Block;
 	type AccountData = ();
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type DbWeight = ();
-	type BaseCallFilter = Everything;
-	type SystemWeightInfo = ();
-	type SS58Prefix = ();
-	type OnSetCode = ();
-	type MaxConsumers = ConstU32<16>;
 }
 
 impl pallet_timestamp::Config for Runtime {
@@ -88,16 +63,16 @@ impl pallet_timestamp::Config for Runtime {
 	type WeightInfo = ();
 }
 
-thread_local! {
-	static AUSD_DOT_POOL: RefCell<(Balance, Balance)> = RefCell::new((Zero::zero(), Zero::zero()));
-	static ACA_DOT_POOL: RefCell<(Balance, Balance)> = RefCell::new((Zero::zero(), Zero::zero()));
+parameter_types! {
+	static AusdDotPool: (Balance, Balance) = (Zero::zero(), Zero::zero());
+	static AcaDotPool: (Balance, Balance) = (Zero::zero(), Zero::zero());
 }
 
 pub fn set_pool(trading_pair: &TradingPair, pool_0: Balance, pool_1: Balance) {
 	if *trading_pair == AUSDDOTPair::get() {
-		AUSD_DOT_POOL.with(|v| *v.borrow_mut() = (pool_0, pool_1));
+		AusdDotPool::mutate(|v| *v = (pool_0, pool_1));
 	} else if *trading_pair == ACADOTPair::get() {
-		ACA_DOT_POOL.with(|v| *v.borrow_mut() = (pool_0, pool_1));
+		AcaDotPool::mutate(|v| *v = (pool_0, pool_1));
 	}
 }
 
@@ -107,9 +82,9 @@ impl DEXManager<AccountId, Balance, CurrencyId> for MockDEX {
 		TradingPair::from_currency_ids(currency_id_0, currency_id_1)
 			.map(|trading_pair| {
 				if trading_pair == AUSDDOTPair::get() {
-					AUSD_DOT_POOL.with(|v| *v.borrow())
+					AusdDotPool::get()
 				} else if trading_pair == ACADOTPair::get() {
-					ACA_DOT_POOL.with(|v| *v.borrow())
+					AcaDotPool::get()
 				} else {
 					(0, 0)
 				}
@@ -178,18 +153,13 @@ impl Config for Runtime {
 	type WeightInfo = ();
 }
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
 
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic
-	{
-		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
-		Timestamp: pallet_timestamp::{Pallet, Call, Storage, Inherent},
-		DexOracle: dex_oracle::{Pallet, Call, Storage},
+	pub enum Runtime {
+		System: frame_system,
+		Timestamp: pallet_timestamp,
+		DexOracle: dex_oracle,
 	}
 );
 
@@ -203,8 +173,8 @@ impl Default for ExtBuilder {
 
 impl ExtBuilder {
 	pub fn build(self) -> sp_io::TestExternalities {
-		let t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		t.into()

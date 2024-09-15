@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -19,13 +19,13 @@
 use crate::{AccountId, EvmAccounts, Runtime, RuntimeEvent, RuntimeOrigin, System, EVM};
 
 use super::utils::{dollar, set_balance, NATIVE};
-use frame_support::dispatch::DispatchError;
 use frame_system::RawOrigin;
 use module_evm::MaxCodeSize;
 use module_support::AddressMapping;
 use orml_benchmarking::{runtime_benchmarks, whitelist_account};
 use sp_core::{H160, H256};
 use sp_io::hashing::keccak_256;
+use sp_runtime::DispatchError;
 use sp_std::{str::FromStr, vec};
 
 fn contract_addr() -> H160 {
@@ -56,8 +56,8 @@ fn deploy_contract(caller: AccountId) -> Result<H160, DispatchError> {
 		from: module_evm_accounts::EvmAddressMapping::<Runtime>::get_evm_address(&caller).unwrap(),
 		contract: contract_addr(),
 		logs: vec![],
-		used_gas: 132_199,
-		used_storage: 10_367,
+		used_gas: 132225,
+		used_storage: 10367,
 	}));
 	Ok(contract_addr())
 }
@@ -194,6 +194,9 @@ runtime_benchmarks! {
 
 		set_balance(NATIVE, &alice_account, 1_000_000_000 * dollar(NATIVE));
 		set_balance(NATIVE, &bob_account_id(), 1_000 * dollar(NATIVE));
+
+		EVM::enable_contract_development(RuntimeOrigin::signed(alice_account_id()))?;
+
 		let contract = deploy_contract(alice_account_id())?;
 
 		whitelist_account!(alice_account);
@@ -204,6 +207,8 @@ runtime_benchmarks! {
 
 		set_balance(NATIVE, &alice_account, 1_000_000 * dollar(NATIVE));
 		set_balance(NATIVE, &bob_account_id(), 1_000 * dollar(NATIVE));
+
+		EVM::enable_contract_development(RuntimeOrigin::signed(alice_account_id()))?;
 		let contract = deploy_contract(alice_account_id())?;
 	}: _(RawOrigin::Root, contract)
 
@@ -229,6 +234,8 @@ runtime_benchmarks! {
 		let alice_account = alice_account_id();
 
 		set_balance(NATIVE, &alice_account, 1_000_000 * dollar(NATIVE));
+
+		EVM::enable_contract_development(RuntimeOrigin::signed(alice_account_id()))?;
 		let contract = deploy_contract(alice_account_id())?;
 
 		let new_contract = vec![0; c as usize];
@@ -240,6 +247,8 @@ runtime_benchmarks! {
 		let alice_account = alice_account_id();
 
 		set_balance(NATIVE, &alice_account, 1_000_000 * dollar(NATIVE));
+
+		EVM::enable_contract_development(RuntimeOrigin::signed(alice_account_id()))?;
 		let contract = deploy_contract(alice_account_id())?;
 
 		whitelist_account!(alice_account);

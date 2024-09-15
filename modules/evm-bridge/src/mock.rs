@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,49 +22,32 @@
 
 use super::*;
 use frame_support::{
-	assert_ok, construct_runtime, ord_parameter_types, parameter_types,
-	traits::{ConstU128, ConstU32, ConstU64, Everything},
+	assert_ok, construct_runtime, derive_impl, ord_parameter_types, parameter_types,
+	traits::{ConstU128, ConstU32, ConstU64},
 };
 use frame_system::EnsureSignedBy;
+use module_support::{
+	mocks::{MockAddressMapping, TestRandomness},
+	AddressMapping,
+};
 use primitives::{evm::convert_decimals_to_evm, evm::EvmAddress, ReserveIdentifier};
 use sp_core::{crypto::AccountId32, H256};
-use sp_runtime::{testing::Header, traits::IdentityLookup};
+use sp_runtime::{traits::IdentityLookup, BuildStorage};
 pub use sp_std::str::FromStr;
-use support::{mocks::MockAddressMapping, AddressMapping};
 
 pub type AccountId = AccountId32;
-pub type BlockNumber = u64;
 pub type Balance = u128;
 
 mod evm_bridge {
 	pub use super::super::*;
 }
 
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig as frame_system::DefaultConfig)]
 impl frame_system::Config for Runtime {
-	type BaseCallFilter = Everything;
-	type RuntimeOrigin = RuntimeOrigin;
-	type RuntimeCall = RuntimeCall;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type Hash = H256;
-	type Hashing = ::sp_runtime::traits::BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
-	type RuntimeEvent = RuntimeEvent;
-	type BlockHashCount = ConstU64<250>;
-	type DbWeight = ();
-	type BlockWeights = ();
-	type BlockLength = ();
-	type Version = ();
-	type PalletInfo = PalletInfo;
+	type Block = Block;
 	type AccountData = pallet_balances::AccountData<Balance>;
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type SystemWeightInfo = ();
-	type SS58Prefix = ();
-	type OnSetCode = ();
-	type MaxConsumers = ConstU32<16>;
 }
 
 impl pallet_balances::Config for Runtime {
@@ -72,14 +55,14 @@ impl pallet_balances::Config for Runtime {
 	type DustRemoval = ();
 	type RuntimeEvent = RuntimeEvent;
 	type ExistentialDeposit = ConstU128<1>;
-	type AccountStore = support::SystemAccountStore<Runtime>;
+	type AccountStore = module_support::SystemAccountStore<Runtime>;
 	type MaxLocks = ();
 	type MaxReserves = ConstU32<50>;
 	type ReserveIdentifier = ReserveIdentifier;
 	type WeightInfo = ();
-	type HoldIdentifier = ();
+	type RuntimeHoldReason = RuntimeHoldReason;
+	type RuntimeFreezeReason = RuntimeFreezeReason;
 	type FreezeIdentifier = ();
-	type MaxHolds = ();
 	type MaxFreezes = ();
 }
 
@@ -112,7 +95,7 @@ impl module_evm::Config for Runtime {
 	type PrecompilesType = ();
 	type PrecompilesValue = ();
 	type GasToWeight = ();
-	type ChargeTransactionPayment = support::mocks::MockReservedTransactionPayment<Balances>;
+	type ChargeTransactionPayment = module_support::mocks::MockReservedTransactionPayment<Balances>;
 	type NetworkContractOrigin = EnsureSignedBy<NetworkContractAccount, AccountId32>;
 	type NetworkContractSource = NetworkContractSource;
 
@@ -123,6 +106,7 @@ impl module_evm::Config for Runtime {
 
 	type Runner = module_evm::runner::stack::Runner<Self>;
 	type FindAuthor = ();
+	type Randomness = TestRandomness<Self>;
 	type Task = ();
 	type IdleScheduler = ();
 	type WeightInfo = ();
@@ -132,19 +116,14 @@ impl Config for Runtime {
 	type EVM = EVM;
 }
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
 
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
-	{
-		System: frame_system::{Pallet, Call, Storage, Config, Event<T>},
-		EVMBridge: evm_bridge::{Pallet},
-		EVM: module_evm::{Pallet, Config<T>, Call, Storage, Event<T>},
-		Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
+	pub enum Runtime {
+		System: frame_system,
+		EVMBridgeModule: evm_bridge,
+		EVM: module_evm,
+		Balances: pallet_balances,
 	}
 );
 
@@ -209,14 +188,9 @@ pub fn deploy_contracts() {
 				H256::from_slice(&buf).as_bytes().to_vec()
 			},
 		}],
-		used_gas: 1235081,
-		used_storage: 5131,
+		used_gas: 1013342,
+		used_storage: 4028,
 	}));
-
-	assert_ok!(EVM::publish_free(
-		RuntimeOrigin::signed(CouncilAccount::get()),
-		erc20_address()
-	));
 }
 
 pub fn deploy_liquidation_ok_contracts() {
@@ -236,14 +210,9 @@ pub fn deploy_liquidation_ok_contracts() {
 		from: alice_evm_addr(),
 		contract: erc20_address(),
 		logs: vec![],
-		used_gas: 235274,
-		used_storage: 844,
+		used_gas: 234056,
+		used_storage: 837,
 	}));
-
-	assert_ok!(EVM::publish_free(
-		RuntimeOrigin::signed(CouncilAccount::get()),
-		erc20_address()
-	));
 }
 
 pub fn deploy_liquidation_err_contracts() {
@@ -263,14 +232,9 @@ pub fn deploy_liquidation_err_contracts() {
 		from: alice_evm_addr(),
 		contract: erc20_address(),
 		logs: vec![],
-		used_gas: 228284,
-		used_storage: 818,
+		used_gas: 226860,
+		used_storage: 810,
 	}));
-
-	assert_ok!(EVM::publish_free(
-		RuntimeOrigin::signed(CouncilAccount::get()),
-		erc20_address()
-	));
 }
 
 impl ExtBuilder {
@@ -280,8 +244,8 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		pallet_balances::GenesisConfig::<Runtime> {

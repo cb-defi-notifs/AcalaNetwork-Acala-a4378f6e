@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,7 +18,7 @@
 
 use super::error::Error;
 use crate::Balance;
-use codec::{Decode, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 use sp_runtime::{traits::Zero, RuntimeDebug};
 
@@ -72,6 +72,14 @@ where
 
 	pub fn total(&self) -> Balance {
 		self.total
+	}
+
+	pub fn unlocking(&self) -> sp_std::vec::Vec<(Balance, Moment)> {
+		self.unlocking
+			.iter()
+			.cloned()
+			.map(|chunk| (chunk.value, chunk.unlock_at))
+			.collect()
 	}
 
 	pub fn unlocking_len(&self) -> usize {
@@ -203,9 +211,10 @@ where
 mod tests {
 	use super::*;
 	use frame_support::{
-		assert_err, bounded_vec,
+		assert_err,
 		traits::{ConstU128, ConstU32},
 	};
+	use sp_runtime::bounded_vec;
 
 	type Ledger = BondingLedger<u32, ConstU32<3>, ConstU128<10>>;
 

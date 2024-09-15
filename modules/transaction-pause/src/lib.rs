@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -20,17 +20,14 @@
 #![allow(clippy::unused_unit)]
 
 use frame_support::{
-	dispatch::{CallMetadata, GetCallMetadata},
 	pallet_prelude::*,
-	traits::{Contains, PalletInfoAccess},
-	transactional,
+	traits::{CallMetadata, Contains, GetCallMetadata, PalletInfoAccess},
 };
 use frame_system::pallet_prelude::*;
 use sp_core::H160;
 use sp_runtime::DispatchResult;
 use sp_std::{prelude::*, vec::Vec};
 
-pub mod migrations;
 mod mock;
 mod tests;
 pub mod weights;
@@ -99,13 +96,12 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::pause_transaction())]
-		#[transactional]
 		pub fn pause_transaction(origin: OriginFor<T>, pallet_name: Vec<u8>, function_name: Vec<u8>) -> DispatchResult {
 			T::UpdateOrigin::ensure_origin(origin)?;
 
@@ -130,7 +126,6 @@ pub mod module {
 
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::unpause_transaction())]
-		#[transactional]
 		pub fn unpause_transaction(
 			origin: OriginFor<T>,
 			pallet_name: Vec<u8>,
@@ -148,7 +143,6 @@ pub mod module {
 
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::pause_evm_precompile())]
-		#[transactional]
 		pub fn pause_evm_precompile(origin: OriginFor<T>, address: H160) -> DispatchResult {
 			T::UpdateOrigin::ensure_origin(origin)?;
 			PausedEvmPrecompiles::<T>::mutate_exists(address, |maybe_paused| {
@@ -162,7 +156,6 @@ pub mod module {
 
 		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::unpause_evm_precompile())]
-		#[transactional]
 		pub fn unpause_evm_precompile(origin: OriginFor<T>, address: H160) -> DispatchResult {
 			T::UpdateOrigin::ensure_origin(origin)?;
 			if PausedEvmPrecompiles::<T>::take(address).is_some() {

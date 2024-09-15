@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -26,11 +26,11 @@ use mock::{
 	ACAJointSwap, AUSDBTCPair, AUSDDOTPair, AUSDJointSwap, DOTBTCPair, DexModule, ExtBuilder, ListingOrigin, Runtime,
 	RuntimeEvent, RuntimeOrigin, System, Tokens, ACA, ALICE, AUSD, AUSD_DOT_POOL_RECORD, BOB, BTC, CAROL, DOT,
 };
+use module_support::{Swap, SwapError};
 use orml_traits::MultiReservableCurrency;
 use sp_core::H160;
 use sp_runtime::traits::BadOrigin;
 use std::str::FromStr;
-use support::{Swap, SwapError};
 
 #[test]
 fn list_provisioning_work() {

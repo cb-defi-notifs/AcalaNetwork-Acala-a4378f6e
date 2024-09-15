@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -26,16 +26,16 @@ use frame_support::{assert_noop, assert_ok, dispatch::GetDispatchInfo, traits::W
 use mock::{
 	alice, bob, deploy_contracts, erc20_address, erc20_address_not_exist, eva, AccountId, AdaptedBasicCurrency,
 	Balances, CouncilAccount, Currencies, DustAccount, ExtBuilder, NativeCurrency, PalletBalances, Runtime,
-	RuntimeEvent, RuntimeOrigin, System, Tokens, ALICE_BALANCE, CHARLIE, DAVE, DOT, EVE, EVM, FERDIE, ID_1,
+	RuntimeEvent, RuntimeOrigin, System, TestId, Tokens, ALICE_BALANCE, CHARLIE, DAVE, DOT, EVE, EVM, FERDIE, ID_1,
 	NATIVE_CURRENCY_ID, X_TOKEN_ID,
 };
+use module_support::mocks::MockAddressMapping;
+use module_support::EVM as EVMTrait;
 use sp_core::H160;
 use sp_runtime::{
 	traits::{BadOrigin, Bounded},
 	ModuleError, TokenError,
 };
-use support::mocks::MockAddressMapping;
-use support::EVM as EVMTrait;
 
 // this test displays the ED and provider/consumer behavior of current pallet-balances
 #[test]
@@ -291,7 +291,7 @@ fn force_set_lock_and_force_remove_lock_should_work() {
 
 			assert_eq!(
 				Tokens::locks(&alice(), DOT)[0],
-				tokens::BalanceLock { id: ID_1, amount: 100 }
+				orml_tokens::BalanceLock { id: ID_1, amount: 100 }
 			);
 			assert_eq!(
 				PalletBalances::locks(&alice())[0],
@@ -318,7 +318,7 @@ fn force_set_lock_and_force_remove_lock_should_work() {
 			));
 			assert_eq!(
 				Tokens::locks(&alice(), DOT)[0],
-				tokens::BalanceLock { id: ID_1, amount: 10 }
+				orml_tokens::BalanceLock { id: ID_1, amount: 10 }
 			);
 			assert_eq!(
 				PalletBalances::locks(&alice())[0],
@@ -331,24 +331,9 @@ fn force_set_lock_and_force_remove_lock_should_work() {
 
 			// do nothing
 			assert_ok!(Currencies::force_set_lock(RuntimeOrigin::root(), alice(), DOT, 0, ID_1,));
-			assert_ok!(Currencies::force_set_lock(
-				RuntimeOrigin::root(),
-				alice(),
-				NATIVE_CURRENCY_ID,
-				0,
-				ID_1,
-			));
 			assert_eq!(
 				Tokens::locks(&alice(), DOT)[0],
-				tokens::BalanceLock { id: ID_1, amount: 10 }
-			);
-			assert_eq!(
-				PalletBalances::locks(&alice())[0],
-				pallet_balances::BalanceLock {
-					id: ID_1,
-					amount: 100,
-					reasons: WithdrawReasons::all().into(),
-				}
+				orml_tokens::BalanceLock { id: ID_1, amount: 10 }
 			);
 
 			// remove lock
@@ -642,7 +627,7 @@ fn call_event_should_work() {
 			assert_ok!(Currencies::transfer(Some(alice()).into(), bob(), X_TOKEN_ID, 50));
 			assert_eq!(Currencies::free_balance(X_TOKEN_ID, &alice()), 50);
 			assert_eq!(Currencies::free_balance(X_TOKEN_ID, &bob()), 150);
-			System::assert_has_event(RuntimeEvent::Tokens(tokens::Event::Transfer {
+			System::assert_has_event(RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
 				currency_id: X_TOKEN_ID,
 				from: alice(),
 				to: bob(),
@@ -664,7 +649,7 @@ fn call_event_should_work() {
 			));
 			assert_eq!(Currencies::free_balance(X_TOKEN_ID, &alice()), 40);
 			assert_eq!(Currencies::free_balance(X_TOKEN_ID, &bob()), 160);
-			System::assert_has_event(RuntimeEvent::Tokens(tokens::Event::Transfer {
+			System::assert_has_event(RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
 				currency_id: X_TOKEN_ID,
 				from: alice(),
 				to: bob(),
@@ -683,7 +668,7 @@ fn call_event_should_work() {
 				100
 			));
 			assert_eq!(Currencies::free_balance(X_TOKEN_ID, &alice()), 140);
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::Deposited {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::Deposited {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				amount: 100,
@@ -695,7 +680,7 @@ fn call_event_should_work() {
 				20
 			));
 			assert_eq!(Currencies::free_balance(X_TOKEN_ID, &alice()), 120);
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::Withdrawn {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::Withdrawn {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				amount: 20,
@@ -1314,11 +1299,11 @@ fn fungible_inspect_trait_should_work() {
 			// Test for Inspect::balance and Inspect::total_balance
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::balance(NATIVE_CURRENCY_ID, &alice()),
-				148690
+				159720
 			);
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::total_balance(NATIVE_CURRENCY_ID, &alice()),
-				148690
+				159720
 			);
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::balance(X_TOKEN_ID, &alice()),
@@ -1328,10 +1313,10 @@ fn fungible_inspect_trait_should_work() {
 				<Currencies as fungibles::Inspect<_>>::balance(CurrencyId::Erc20(erc20_address()), &alice()),
 				ALICE_BALANCE
 			);
-			assert_eq!(<NativeCurrency as fungible::Inspect<_>>::balance(&alice()), 148690);
+			assert_eq!(<NativeCurrency as fungible::Inspect<_>>::balance(&alice()), 159720);
 			assert_eq!(
 				<AdaptedBasicCurrency as fungible::Inspect<_>>::balance(&alice()),
-				148690
+				159720
 			);
 
 			// Test for Inspect::reducible_balance. No locks or reserves
@@ -1343,7 +1328,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Preserve,
 					Fortitude::Polite
 				),
-				148688
+				159718
 			);
 			assert_eq!(
 				<NativeCurrency as fungible::Inspect<_>>::reducible_balance(
@@ -1351,7 +1336,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Preserve,
 					Fortitude::Polite
 				),
-				148688
+				159718
 			);
 			assert_eq!(
 				<AdaptedBasicCurrency as fungible::Inspect<_>>::reducible_balance(
@@ -1359,7 +1344,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Preserve,
 					Fortitude::Polite
 				),
-				148688
+				159718
 			);
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::reducible_balance(
@@ -1389,7 +1374,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Expendable,
 					Fortitude::Polite
 				),
-				148690
+				159720
 			);
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::reducible_balance(
@@ -1415,7 +1400,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Expendable,
 					Fortitude::Polite
 				),
-				148690
+				159720
 			);
 			assert_eq!(
 				<AdaptedBasicCurrency as fungible::Inspect<_>>::reducible_balance(
@@ -1423,7 +1408,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Expendable,
 					Fortitude::Polite
 				),
-				148690
+				159720
 			);
 
 			// Set some locks
@@ -1438,7 +1423,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Preserve,
 					Fortitude::Polite
 				),
-				147690
+				158720
 			);
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::reducible_balance(
@@ -1464,7 +1449,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Preserve,
 					Fortitude::Polite
 				),
-				147690
+				158720
 			);
 			assert_eq!(
 				<AdaptedBasicCurrency as fungible::Inspect<_>>::reducible_balance(
@@ -1472,7 +1457,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Preserve,
 					Fortitude::Polite
 				),
-				147690
+				158720
 			);
 
 			assert_eq!(
@@ -1482,7 +1467,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Expendable,
 					Fortitude::Polite
 				),
-				147690
+				158720
 			);
 			assert_eq!(
 				<Currencies as fungibles::Inspect<_>>::reducible_balance(
@@ -1508,7 +1493,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Expendable,
 					Fortitude::Polite
 				),
-				147690
+				158720
 			);
 			assert_eq!(
 				<AdaptedBasicCurrency as fungible::Inspect<_>>::reducible_balance(
@@ -1516,7 +1501,7 @@ fn fungible_inspect_trait_should_work() {
 					Preservation::Expendable,
 					Fortitude::Polite
 				),
-				147690
+				158720
 			);
 
 			// Test for Inspect::can_deposit
@@ -1641,11 +1626,11 @@ fn fungible_inspect_trait_should_work() {
 			);
 
 			assert_eq!(
-				<Currencies as fungibles::Inspect<_>>::can_withdraw(NATIVE_CURRENCY_ID, &alice(), 147690 + 1),
+				<Currencies as fungibles::Inspect<_>>::can_withdraw(NATIVE_CURRENCY_ID, &alice(), 158720 + 1),
 				WithdrawConsequence::Frozen
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::Inspect<_>>::can_withdraw(&alice(), 147690 + 1),
+				<AdaptedBasicCurrency as fungible::Inspect<_>>::can_withdraw(&alice(), 158720 + 1),
 				WithdrawConsequence::Frozen
 			);
 			assert_eq!(
@@ -1780,7 +1765,7 @@ fn fungible_mutate_trait_should_work() {
 				&alice(),
 				1000
 			));
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::Deposited {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::Deposited {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				amount: 1000,
@@ -1830,6 +1815,7 @@ fn fungible_mutate_trait_should_work() {
 				NATIVE_CURRENCY_ID,
 				&alice(),
 				1000,
+				Preservation::Expendable,
 				Precision::Exact,
 				Fortitude::Force,
 			));
@@ -1858,10 +1844,11 @@ fn fungible_mutate_trait_should_work() {
 				X_TOKEN_ID,
 				&alice(),
 				1000,
+				Preservation::Expendable,
 				Precision::Exact,
 				Fortitude::Force,
 			));
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::Withdrawn {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::Withdrawn {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				amount: 1000,
@@ -1879,6 +1866,7 @@ fn fungible_mutate_trait_should_work() {
 				CurrencyId::Erc20(erc20_address()),
 				&alice(),
 				0,
+				Preservation::Expendable,
 				Precision::Exact,
 				Fortitude::Force,
 			));
@@ -1888,6 +1876,7 @@ fn fungible_mutate_trait_should_work() {
 					CurrencyId::Erc20(erc20_address()),
 					&alice(),
 					1,
+					Preservation::Expendable,
 					Precision::Exact,
 					Fortitude::Force,
 				),
@@ -1902,6 +1891,7 @@ fn fungible_mutate_trait_should_work() {
 			assert_ok!(<AdaptedBasicCurrency as fungible::Mutate<_>>::burn_from(
 				&alice(),
 				1000,
+				Preservation::Expendable,
 				Precision::Exact,
 				Fortitude::Force,
 			));
@@ -1917,6 +1907,7 @@ fn fungible_mutate_trait_should_work() {
 					NATIVE_CURRENCY_ID,
 					&alice(),
 					99_999,
+					Preservation::Expendable,
 					Precision::Exact,
 					Fortitude::Force,
 				),
@@ -1997,7 +1988,7 @@ fn fungible_mutate_trait_transfer_should_work() {
 				10000,
 				Preservation::Preserve,
 			));
-			System::assert_has_event(RuntimeEvent::Tokens(tokens::Event::Transfer {
+			System::assert_has_event(RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
 				currency_id: X_TOKEN_ID,
 				from: alice(),
 				to: bob(),
@@ -2116,7 +2107,7 @@ fn fungible_unbalanced_trait_should_work() {
 				&alice(),
 				80000
 			));
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::BalanceSet {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::BalanceSet {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				free: 80000,
@@ -2166,7 +2157,7 @@ fn fungible_unbalanced_trait_should_work() {
 			);
 			<Currencies as fungibles::Unbalanced<_>>::set_total_issuance(X_TOKEN_ID, 80000);
 			assert_eq!(<Currencies as fungibles::Inspect<_>>::total_issuance(X_TOKEN_ID), 80000);
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::TotalIssuanceSet {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::TotalIssuanceSet {
 				currency_id: X_TOKEN_ID,
 				amount: 80000,
 			}));
@@ -2203,27 +2194,27 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				500000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				0
 			);
 
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::can_hold(NATIVE_CURRENCY_ID, &(), &alice(), 499998),
+				<Currencies as fungibles::InspectHold<_>>::can_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice(), 499998),
 				true,
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::can_hold(NATIVE_CURRENCY_ID, &(), &alice(), 500001),
+				<Currencies as fungibles::InspectHold<_>>::can_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice(), 500001),
 				false
 			);
 
 			assert_ok!(<Currencies as fungibles::MutateHold<_>>::hold(
 				NATIVE_CURRENCY_ID,
-				&(),
+				&TestId::Foo,
 				&alice(),
 				20000
 			));
 			assert_noop!(
-				<Currencies as fungibles::MutateHold<_>>::hold(NATIVE_CURRENCY_ID, &(), &alice(), 500000),
+				<Currencies as fungibles::MutateHold<_>>::hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice(), 500000),
 				TokenError::FundsUnavailable,
 			);
 			assert_eq!(
@@ -2231,7 +2222,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				20000
 			);
 
@@ -2240,31 +2231,31 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				200000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &alice()),
 				0
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::can_hold(X_TOKEN_ID, &(), &alice(), 200000),
+				<Currencies as fungibles::InspectHold<_>>::can_hold(X_TOKEN_ID, &TestId::Foo, &alice(), 200000),
 				true
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::can_hold(X_TOKEN_ID, &(), &alice(), 200001),
+				<Currencies as fungibles::InspectHold<_>>::can_hold(X_TOKEN_ID, &TestId::Foo, &alice(), 200001),
 				false
 			);
 			assert_ok!(<Currencies as fungibles::MutateHold<_>>::hold(
 				X_TOKEN_ID,
-				&(),
+				&TestId::Foo,
 				&alice(),
 				20000
 			));
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::Reserved {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::Reserved {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				amount: 20000,
 			}));
 
 			assert_noop!(
-				<Currencies as fungibles::MutateHold<_>>::hold(X_TOKEN_ID, &(), &alice(), 200000),
+				<Currencies as fungibles::MutateHold<_>>::hold(X_TOKEN_ID, &TestId::Foo, &alice(), 200000),
 				DispatchError::Module(ModuleError {
 					index: 2,
 					error: [0, 0, 0, 0],
@@ -2276,7 +2267,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				180000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &alice()),
 				20000
 			);
 
@@ -2285,15 +2276,15 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &alice()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &alice()),
 				20000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::can_hold(&(), &alice(), 20000),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::can_hold(&TestId::Foo, &alice(), 20000),
 				true
 			);
 			assert_ok!(<AdaptedBasicCurrency as fungible::MutateHold<_>>::hold(
-				&(),
+				&TestId::Foo,
 				&alice(),
 				20000
 			));
@@ -2302,7 +2293,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				460000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &alice()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &alice()),
 				40000
 			);
 
@@ -2311,13 +2302,13 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				460000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				40000
 			);
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					NATIVE_CURRENCY_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					10000,
 					Precision::BestEffort,
@@ -2329,13 +2320,13 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				470000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				30000
 			);
 			assert_noop!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					NATIVE_CURRENCY_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					50000,
 					Precision::Exact,
@@ -2345,7 +2336,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					NATIVE_CURRENCY_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					50000,
 					Precision::BestEffort,
@@ -2353,12 +2344,12 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				Ok(30000)
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				0
 			);
 			assert_ok!(<Currencies as fungibles::MutateHold<_>>::hold(
 				NATIVE_CURRENCY_ID,
-				&(),
+				&TestId::Foo,
 				&alice(),
 				30000
 			));
@@ -2368,20 +2359,20 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				180000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &alice()),
 				20000
 			);
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					X_TOKEN_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					10000,
 					Precision::BestEffort,
 				),
 				Ok(10000)
 			);
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::Unreserved {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::Unreserved {
 				currency_id: X_TOKEN_ID,
 				who: alice(),
 				amount: 10000,
@@ -2392,11 +2383,17 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				190000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &alice()),
 				10000
 			);
 			assert_noop!(
-				<Currencies as fungibles::MutateHold<_>>::release(X_TOKEN_ID, &(), &alice(), 100000, Precision::Exact,),
+				<Currencies as fungibles::MutateHold<_>>::release(
+					X_TOKEN_ID,
+					&TestId::Foo,
+					&alice(),
+					100000,
+					Precision::Exact,
+				),
 				DispatchError::Module(ModuleError {
 					index: 2,
 					error: [0, 0, 0, 0],
@@ -2406,7 +2403,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					X_TOKEN_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					100000,
 					Precision::BestEffort,
@@ -2415,7 +2412,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			);
 			assert_ok!(<Currencies as fungibles::MutateHold<_>>::hold(
 				X_TOKEN_ID,
-				&(),
+				&TestId::Foo,
 				&alice(),
 				10000
 			));
@@ -2425,11 +2422,16 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				470000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &alice()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &alice()),
 				30000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::MutateHold<_>>::release(&(), &alice(), 10000, Precision::BestEffort,),
+				<AdaptedBasicCurrency as fungible::MutateHold<_>>::release(
+					&TestId::Foo,
+					&alice(),
+					10000,
+					Precision::BestEffort,
+				),
 				Ok(10000)
 			);
 			assert_eq!(
@@ -2437,7 +2439,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &alice()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &alice()),
 				20000
 			);
 
@@ -2446,7 +2448,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				20000
 			);
 			assert_eq!(
@@ -2454,13 +2456,13 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				10000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &bob()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &bob()),
 				0
 			);
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					NATIVE_CURRENCY_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					2000,
@@ -2473,7 +2475,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_noop!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					NATIVE_CURRENCY_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					200000,
@@ -2488,7 +2490,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &alice()),
 				18000
 			);
 			assert_eq!(
@@ -2496,7 +2498,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				10000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &(), &bob()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(NATIVE_CURRENCY_ID, &TestId::Foo, &bob()),
 				2000
 			);
 
@@ -2505,7 +2507,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				190000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &alice()),
 				10000
 			);
 			assert_eq!(
@@ -2513,13 +2515,13 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				10000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &bob()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &bob()),
 				0
 			);
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					X_TOKEN_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					2000,
@@ -2529,7 +2531,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				),
 				Ok(2000)
 			);
-			System::assert_last_event(RuntimeEvent::Tokens(tokens::Event::ReserveRepatriated {
+			System::assert_last_event(RuntimeEvent::Tokens(orml_tokens::Event::ReserveRepatriated {
 				currency_id: X_TOKEN_ID,
 				from: alice(),
 				to: bob(),
@@ -2540,7 +2542,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_noop!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					X_TOKEN_ID,
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					200000,
@@ -2559,7 +2561,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				190000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &alice()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &alice()),
 				8000
 			);
 			assert_eq!(
@@ -2567,7 +2569,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				10000
 			);
 			assert_eq!(
-				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &(), &bob()),
+				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(X_TOKEN_ID, &TestId::Foo, &bob()),
 				2000
 			);
 
@@ -2576,17 +2578,17 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &alice()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &alice()),
 				18000
 			);
 			assert_eq!(<AdaptedBasicCurrency as fungible::Inspect<_>>::balance(&bob()), 10000);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &bob()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &bob()),
 				2000
 			);
 			assert_eq!(
 				<AdaptedBasicCurrency as fungible::MutateHold<_>>::transfer_on_hold(
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					2000,
@@ -2601,12 +2603,12 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 				480000
 			);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &alice()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &alice()),
 				16000
 			);
 			assert_eq!(<AdaptedBasicCurrency as fungible::Inspect<_>>::balance(&bob()), 10000);
 			assert_eq!(
-				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&(), &bob()),
+				<AdaptedBasicCurrency as fungible::InspectHold<_>>::balance_on_hold(&TestId::Foo, &bob()),
 				4000
 			);
 
@@ -2618,7 +2620,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice()
 				),
 				0
@@ -2626,7 +2628,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::can_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					8000
 				),
@@ -2635,7 +2637,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::can_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					ALICE_BALANCE + 1
 				),
@@ -2643,7 +2645,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			);
 			assert_ok!(<Currencies as fungibles::MutateHold<_>>::hold(
 				CurrencyId::Erc20(erc20_address()),
-				&(),
+				&TestId::Foo,
 				&alice(),
 				8000
 			));
@@ -2655,7 +2657,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice()
 				),
 				8000
@@ -2664,7 +2666,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					0,
 					Precision::BestEffort,
@@ -2675,7 +2677,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_noop!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					8001,
 					Precision::Exact,
@@ -2685,7 +2687,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::release(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					8001,
 					Precision::BestEffort,
@@ -2700,7 +2702,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice()
 				),
 				0
@@ -2708,7 +2710,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 
 			assert_ok!(<Currencies as fungibles::MutateHold<_>>::hold(
 				CurrencyId::Erc20(erc20_address()),
-				&(),
+				&TestId::Foo,
 				&alice(),
 				8000
 			));
@@ -2720,7 +2722,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice()
 				),
 				8000
@@ -2732,7 +2734,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&bob()
 				),
 				0
@@ -2741,7 +2743,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_noop!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					8001,
@@ -2755,7 +2757,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					2000,
@@ -2773,7 +2775,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice()
 				),
 				6000
@@ -2785,7 +2787,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&bob()
 				),
 				2000
@@ -2794,7 +2796,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::MutateHold<_>>::transfer_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice(),
 					&bob(),
 					6001,
@@ -2811,7 +2813,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&alice()
 				),
 				0
@@ -2823,7 +2825,7 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 			assert_eq!(
 				<Currencies as fungibles::InspectHold<_>>::balance_on_hold(
 					CurrencyId::Erc20(erc20_address()),
-					&(),
+					&TestId::Foo,
 					&bob()
 				),
 				8000
@@ -2834,43 +2836,43 @@ fn fungible_inspect_hold_and_hold_trait_should_work() {
 #[test]
 fn sweep_dust_tokens_works() {
 	ExtBuilder::default().build().execute_with(|| {
-		tokens::Accounts::<Runtime>::insert(
+		orml_tokens::Accounts::<Runtime>::insert(
 			bob(),
 			DOT,
-			tokens::AccountData {
+			orml_tokens::AccountData {
 				free: 1,
 				frozen: 0,
 				reserved: 0,
 			},
 		);
-		tokens::Accounts::<Runtime>::insert(
+		orml_tokens::Accounts::<Runtime>::insert(
 			eva(),
 			DOT,
-			tokens::AccountData {
+			orml_tokens::AccountData {
 				free: 2,
 				frozen: 0,
 				reserved: 0,
 			},
 		);
-		tokens::Accounts::<Runtime>::insert(
+		orml_tokens::Accounts::<Runtime>::insert(
 			alice(),
 			DOT,
-			tokens::AccountData {
+			orml_tokens::AccountData {
 				free: 0,
 				frozen: 1,
 				reserved: 0,
 			},
 		);
-		tokens::Accounts::<Runtime>::insert(
+		orml_tokens::Accounts::<Runtime>::insert(
 			DustAccount::get(),
 			DOT,
-			tokens::AccountData {
+			orml_tokens::AccountData {
 				free: 100,
 				frozen: 0,
 				reserved: 0,
 			},
 		);
-		tokens::TotalIssuance::<Runtime>::insert(DOT, 104);
+		orml_tokens::TotalIssuance::<Runtime>::insert(DOT, 104);
 
 		let accounts = vec![bob(), eva(), alice()];
 
@@ -2891,7 +2893,7 @@ fn sweep_dust_tokens_works() {
 		}));
 
 		// bob's account is gone
-		assert_eq!(tokens::Accounts::<Runtime>::contains_key(bob(), DOT), false);
+		assert_eq!(orml_tokens::Accounts::<Runtime>::contains_key(bob(), DOT), false);
 		assert_eq!(Currencies::free_balance(DOT, &bob()), 0);
 
 		// eva's account remains, not below ED
@@ -3018,7 +3020,7 @@ fn transfer_erc20_will_charge_gas() {
 		assert_eq!(
 			dispatch_info.weight,
 			<Runtime as module::Config>::WeightInfo::transfer_non_native_currency()
-				+ Weight::from_parts(support::evm::limits::erc20::TRANSFER.gas, 0) // mock GasToWeight is 1:1
+				+ Weight::from_parts(module_support::evm::limits::erc20::TRANSFER.gas, 0) // mock GasToWeight is 1:1
 		);
 
 		let dispatch_info = module::Call::<Runtime>::transfer {

@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,5 +16,4 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use module_evm::bench::mock::{AllPalletsWithSystem, Block};
-orml_bencher::run_benches!(AllPalletsWithSystem, Block);
+wasm_bencher::main!({ module_evm::bench::mock::AllPalletsWithSystem::storage_info() });

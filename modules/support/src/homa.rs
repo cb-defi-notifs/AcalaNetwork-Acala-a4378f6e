@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,9 +18,11 @@
 
 use crate::{ExchangeRate, Rate};
 use sp_runtime::DispatchResult;
-use xcm::v3::prelude::*;
+use sp_std::{fmt::Debug, vec::Vec};
+use xcm::v4::prelude::*;
 
 pub trait HomaSubAccountXcm<AccountId, Balance> {
+	type RelayChainAccountId: Debug + Clone + Ord;
 	/// Cross-chain transfer staking currency to sub account on relaychain.
 	fn transfer_staking_to_sub_account(sender: &AccountId, sub_account_index: u16, amount: Balance) -> DispatchResult;
 	/// Send XCM message to the relaychain for sub account to withdraw_unbonded staking currency and
@@ -30,10 +32,12 @@ pub trait HomaSubAccountXcm<AccountId, Balance> {
 	fn bond_extra_on_sub_account(sub_account_index: u16, amount: Balance) -> DispatchResult;
 	/// Send XCM message to the relaychain for sub account to unbond.
 	fn unbond_on_sub_account(sub_account_index: u16, amount: Balance) -> DispatchResult;
+	/// Send XCM message to the relaychain for sub account to nominate.
+	fn nominate_on_sub_account(sub_account_index: u16, targets: Vec<Self::RelayChainAccountId>) -> DispatchResult;
 	/// The fee of cross-chain transfer is deducted from the recipient.
 	fn get_xcm_transfer_fee() -> Balance;
 	/// The fee of parachain
-	fn get_parachain_fee(location: MultiLocation) -> Balance;
+	fn get_parachain_fee(location: Location) -> Balance;
 }
 
 pub trait HomaManager<AccountId, Balance> {

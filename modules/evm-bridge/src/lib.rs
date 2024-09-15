@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -20,20 +20,18 @@
 #![allow(clippy::unused_unit)]
 
 use ethereum_types::BigEndianHash;
-use frame_support::{
-	dispatch::{DispatchError, DispatchResult},
-	pallet_prelude::*,
-};
+use frame_support::{dispatch::DispatchResult, pallet_prelude::*};
+use frame_system::pallet_prelude::*;
 use module_evm::{ExitReason, ExitSucceed};
-use num_enum::{IntoPrimitive, TryFromPrimitive};
-use primitives::{evm::EvmAddress, Balance};
-use sp_core::{H160, H256, U256};
-use sp_runtime::{ArithmeticError, SaturatedConversion};
-use sp_std::vec::Vec;
-use support::{
+use module_support::{
 	evm::limits::{erc20, liquidation},
 	EVMBridge as EVMBridgeTrait, ExecutionMode, InvokeContext, LiquidationEvmBridge as LiquidationEvmBridgeT, EVM,
 };
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use primitives::{evm::EvmAddress, Balance};
+use sp_core::{H160, H256, U256};
+use sp_runtime::{ArithmeticError, DispatchError, SaturatedConversion};
+use sp_std::vec::Vec;
 
 type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
 type BalanceOf<T> = <<T as Config>::EVM as EVM<AccountIdOf<T>>>::Balance;
@@ -87,7 +85,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {}

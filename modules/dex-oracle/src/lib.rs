@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,8 +22,9 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::type_complexity)]
 
-use frame_support::{pallet_prelude::*, traits::Time, transactional};
+use frame_support::{pallet_prelude::*, traits::Time};
 use frame_system::pallet_prelude::*;
+use module_support::{DEXManager, DEXPriceProvider, ExchangeRate};
 use orml_traits::Happened;
 use primitives::{Balance, CurrencyId, TradingPair};
 use sp_core::U256;
@@ -32,7 +33,6 @@ use sp_runtime::{
 	FixedPointNumber, SaturatedConversion,
 };
 use sp_std::marker::PhantomData;
-use support::{DEXManager, DEXPriceProvider, ExchangeRate};
 
 mod mock;
 mod tests;
@@ -102,8 +102,8 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
-		fn on_initialize(_n: T::BlockNumber) -> Weight {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
 			let now = T::Time::now();
 			let mut iterate_count: u32 = 0;
 			let mut update_count: u32 = 0;
@@ -167,7 +167,6 @@ pub mod module {
 		/// - `interval`: the timestamp interval to update average price.
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as Config>::WeightInfo::enable_average_price())]
-		#[transactional]
 		pub fn enable_average_price(
 			origin: OriginFor<T>,
 			currency_id_a: CurrencyId,
@@ -214,7 +213,6 @@ pub mod module {
 		/// - `currency_id_b`: another currency_id that forms a trading pair
 		#[pallet::call_index(1)]
 		#[pallet::weight(<T as Config>::WeightInfo::disable_average_price())]
-		#[transactional]
 		pub fn disable_average_price(
 			origin: OriginFor<T>,
 			currency_id_a: CurrencyId,
@@ -239,7 +237,6 @@ pub mod module {
 		/// - `new_interval`: the new interval.
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::update_average_price_interval())]
-		#[transactional]
 		pub fn update_average_price_interval(
 			origin: OriginFor<T>,
 			currency_id_a: CurrencyId,

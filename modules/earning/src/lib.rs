@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -24,15 +24,18 @@
 use frame_support::{
 	pallet_prelude::*,
 	traits::{Currency, ExistenceRequirement, LockIdentifier, LockableCurrency, OnUnbalanced, WithdrawReasons},
-	transactional,
 };
 use frame_system::pallet_prelude::*;
-use orml_traits::Happened;
+use module_support::EarningManager;
+use orml_traits::{define_parameters, parameters::ParameterStore, Handler};
 use primitives::{
 	bonding::{self, BondingController},
 	Balance,
 };
-use sp_runtime::{traits::Saturating, Permill};
+use sp_runtime::{
+	traits::{Saturating, Zero},
+	DispatchError, Permill,
+};
 
 pub use module::*;
 
@@ -41,6 +44,12 @@ mod tests;
 pub mod weights;
 
 pub use weights::WeightInfo;
+
+define_parameters! {
+	pub Parameters = {
+		InstantUnstakeFee: Permill = 0,
+	}
+}
 
 #[frame_support::pallet]
 pub mod module {
@@ -52,16 +61,16 @@ pub mod module {
 
 		type Currency: LockableCurrency<Self::AccountId, Balance = Balance>;
 
-		type OnBonded: Happened<(Self::AccountId, Balance)>;
-		type OnUnbonded: Happened<(Self::AccountId, Balance)>;
+		type ParameterStore: ParameterStore<Parameters>;
+
+		type OnBonded: Handler<(Self::AccountId, Balance)>;
+		type OnUnbonded: Handler<(Self::AccountId, Balance)>;
 		type OnUnstakeFee: OnUnbalanced<NegativeImbalanceOf<Self>>;
 
 		#[pallet::constant]
 		type MinBond: Get<Balance>;
 		#[pallet::constant]
-		type UnbondingPeriod: Get<Self::BlockNumber>;
-		#[pallet::constant]
-		type InstantUnstakeFee: Get<Option<Permill>>;
+		type UnbondingPeriod: Get<BlockNumberFor<Self>>;
 		#[pallet::constant]
 		type MaxUnbondingChunks: Get<u32>;
 		#[pallet::constant]
@@ -121,7 +130,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -130,19 +139,11 @@ pub mod module {
 		/// locked.
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::bond())]
-		#[transactional]
 		pub fn bond(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			let change = <Self as BondingController>::bond(&who, amount)?;
+			let _ = Self::do_bond(&who, amount)?;
 
-			if let Some(change) = change {
-				T::OnBonded::happened(&(who.clone(), change.change));
-				Self::deposit_event(Event::Bonded {
-					who,
-					amount: change.change,
-				});
-			}
 			Ok(())
 		}
 
@@ -151,20 +152,10 @@ pub mod module {
 		/// unbonding. Token will finish unbonding after `UnbondingPeriod` blocks.
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::unbond())]
-		#[transactional]
 		pub fn unbond(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			let unbond_at = frame_system::Pallet::<T>::block_number().saturating_add(T::UnbondingPeriod::get());
-			let change = <Self as BondingController>::unbond(&who, amount, unbond_at)?;
-
-			if let Some(change) = change {
-				T::OnUnbonded::happened(&(who.clone(), change.change));
-				Self::deposit_event(Event::Unbonded {
-					who,
-					amount: change.change,
-				});
-			}
+			let _ = Self::do_unbond(&who, amount)?;
 
 			Ok(())
 		}
@@ -174,30 +165,10 @@ pub mod module {
 		/// unbonded. This will not unbond tokens during unbonding period.
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::unbond_instant())]
-		#[transactional]
 		pub fn unbond_instant(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			let fee_ratio = T::InstantUnstakeFee::get().ok_or(Error::<T>::NotAllowed)?;
-
-			let change = <Self as BondingController>::unbond_instant(&who, amount)?;
-
-			if let Some(change) = change {
-				let amount = change.change;
-				let fee = fee_ratio.mul_ceil(amount);
-				let final_amount = amount.saturating_sub(fee);
-
-				let unbalance =
-					T::Currency::withdraw(&who, fee, WithdrawReasons::TRANSFER, ExistenceRequirement::KeepAlive)?;
-				T::OnUnstakeFee::on_unbalanced(unbalance);
-
-				T::OnUnbonded::happened(&(who.clone(), final_amount));
-				Self::deposit_event(Event::InstantUnbonded {
-					who,
-					amount: final_amount,
-					fee,
-				});
-			}
+			let _ = Self::do_unbond_instant(&who, amount)?;
 
 			Ok(())
 		}
@@ -207,19 +178,10 @@ pub mod module {
 		/// rebonded.
 		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::rebond())]
-		#[transactional]
 		pub fn rebond(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			let change = <Self as BondingController>::rebond(&who, amount)?;
-
-			if let Some(change) = change {
-				T::OnBonded::happened(&(who.clone(), change.change));
-				Self::deposit_event(Event::Rebonded {
-					who,
-					amount: change.change,
-				});
-			}
+			let _ = Self::do_rebond(&who, amount)?;
 
 			Ok(())
 		}
@@ -227,31 +189,103 @@ pub mod module {
 		/// Withdraw all unbonded tokens.
 		#[pallet::call_index(4)]
 		#[pallet::weight(T::WeightInfo::withdraw_unbonded())]
-		#[transactional]
 		pub fn withdraw_unbonded(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			let change =
-				<Self as BondingController>::withdraw_unbonded(&who, frame_system::Pallet::<T>::block_number())?;
-
-			if let Some(change) = change {
-				Self::deposit_event(Event::Withdrawn {
-					who,
-					amount: change.change,
-				});
-			}
+			let _ = Self::do_withdraw_unbonded(&who)?;
 
 			Ok(())
 		}
 	}
 }
 
-impl<T: Config> Pallet<T> {}
+impl<T: Config> Pallet<T> {
+	fn do_bond(who: &T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		let change = <Self as BondingController>::bond(who, amount)?;
+
+		if let Some(ref change) = change {
+			T::OnBonded::handle(&(who.clone(), change.change))?;
+			Self::deposit_event(Event::Bonded {
+				who: who.clone(),
+				amount: change.change,
+			});
+		}
+		Ok(change.map_or(Zero::zero(), |c| c.change))
+	}
+
+	fn do_unbond(who: &T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		let unbond_at = frame_system::Pallet::<T>::block_number().saturating_add(T::UnbondingPeriod::get());
+		let change = <Self as BondingController>::unbond(who, amount, unbond_at)?;
+
+		if let Some(ref change) = change {
+			T::OnUnbonded::handle(&(who.clone(), change.change))?;
+			Self::deposit_event(Event::Unbonded {
+				who: who.clone(),
+				amount: change.change,
+			});
+		}
+
+		Ok(change.map_or(Zero::zero(), |c| c.change))
+	}
+
+	fn do_unbond_instant(who: &T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		let fee_ratio = T::ParameterStore::get(InstantUnstakeFee).ok_or(Error::<T>::NotAllowed)?;
+
+		let change = <Self as BondingController>::unbond_instant(who, amount)?;
+
+		if let Some(ref change) = change {
+			let amount = change.change;
+			let fee = fee_ratio.mul_ceil(amount);
+			let final_amount = amount.saturating_sub(fee);
+
+			let unbalance =
+				T::Currency::withdraw(who, fee, WithdrawReasons::TRANSFER, ExistenceRequirement::KeepAlive)?;
+			T::OnUnstakeFee::on_unbalanced(unbalance);
+
+			// remove all shares of the change amount.
+			T::OnUnbonded::handle(&(who.clone(), amount))?;
+			Self::deposit_event(Event::InstantUnbonded {
+				who: who.clone(),
+				amount: final_amount,
+				fee,
+			});
+		}
+
+		Ok(change.map_or(Zero::zero(), |c| c.change))
+	}
+
+	fn do_rebond(who: &T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		let change = <Self as BondingController>::rebond(who, amount)?;
+
+		if let Some(ref change) = change {
+			T::OnBonded::handle(&(who.clone(), change.change))?;
+			Self::deposit_event(Event::Rebonded {
+				who: who.clone(),
+				amount: change.change,
+			});
+		}
+
+		Ok(change.map_or(Zero::zero(), |c| c.change))
+	}
+
+	fn do_withdraw_unbonded(who: &T::AccountId) -> Result<Balance, DispatchError> {
+		let change = <Self as BondingController>::withdraw_unbonded(who, frame_system::Pallet::<T>::block_number())?;
+
+		if let Some(ref change) = change {
+			Self::deposit_event(Event::Withdrawn {
+				who: who.clone(),
+				amount: change.change,
+			});
+		}
+
+		Ok(change.map_or(Zero::zero(), |c| c.change))
+	}
+}
 
 impl<T: Config> BondingController for Pallet<T> {
 	type MinBond = T::MinBond;
 	type MaxUnbondingChunks = T::MaxUnbondingChunks;
-	type Moment = T::BlockNumber;
+	type Moment = BlockNumberFor<T>;
 	type AccountId = T::AccountId;
 
 	type Ledger = Ledger<T>;
@@ -276,5 +310,50 @@ impl<T: Config> BondingController for Pallet<T> {
 			bonding::Error::MaxUnlockChunksExceeded => Error::<T>::MaxUnlockChunksExceeded.into(),
 			bonding::Error::NotBonded => Error::<T>::NotBonded.into(),
 		}
+	}
+}
+
+impl<T: Config> EarningManager<T::AccountId, Balance, BondingLedgerOf<T>> for Pallet<T> {
+	type Moment = BlockNumberFor<T>;
+	type FeeRatio = Permill;
+
+	fn bond(who: T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		Self::do_bond(&who, amount)
+	}
+
+	fn unbond(who: T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		Self::do_unbond(&who, amount)
+	}
+
+	fn unbond_instant(who: T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		Self::do_unbond_instant(&who, amount)
+	}
+
+	fn rebond(who: T::AccountId, amount: Balance) -> Result<Balance, DispatchError> {
+		Self::do_rebond(&who, amount)
+	}
+
+	fn withdraw_unbonded(who: T::AccountId) -> Result<Balance, DispatchError> {
+		Self::do_withdraw_unbonded(&who)
+	}
+
+	fn get_bonding_ledger(who: T::AccountId) -> BondingLedgerOf<T> {
+		Self::ledger(who).unwrap_or_default()
+	}
+
+	fn get_instant_unstake_fee() -> Option<Permill> {
+		T::ParameterStore::get(InstantUnstakeFee)
+	}
+
+	fn get_min_bond() -> Balance {
+		T::MinBond::get()
+	}
+
+	fn get_unbonding_period() -> BlockNumberFor<T> {
+		T::UnbondingPeriod::get()
+	}
+
+	fn get_max_unbonding_chunks() -> u32 {
+		T::MaxUnbondingChunks::get()
 	}
 }

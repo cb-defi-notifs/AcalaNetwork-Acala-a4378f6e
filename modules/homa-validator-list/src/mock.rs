@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,26 +22,24 @@
 
 use super::*;
 use frame_support::{
-	construct_runtime, ord_parameter_types, parameter_types,
-	traits::{ConstU128, ConstU32, ConstU64, Everything, Nothing},
+	construct_runtime, derive_impl, parameter_types,
+	traits::{ConstU128, ConstU32, Nothing},
 };
-use frame_system::EnsureSignedBy;
+use frame_system::EnsureRoot;
+use module_support::ExchangeRate;
 use orml_traits::parameter_type_with_key;
 use primitives::{Amount, Balance, CurrencyId, TokenSymbol};
-use sp_core::H256;
-use sp_runtime::{testing::Header, traits::IdentityLookup};
-use sp_std::cell::RefCell;
-use std::collections::HashMap;
-use support::ExchangeRate;
+use sp_runtime::{traits::IdentityLookup, BuildStorage};
 
 pub type AccountId = u128;
 pub type BlockNumber = u64;
 
 pub const ALICE: AccountId = 0;
 pub const BOB: AccountId = 1;
-pub const VALIDATOR_1: AccountId = 2;
-pub const VALIDATOR_2: AccountId = 3;
-pub const VALIDATOR_3: AccountId = 4;
+pub const CHARLIE: AccountId = 2;
+pub const VALIDATOR_1: AccountId = 11;
+pub const VALIDATOR_2: AccountId = 12;
+pub const VALIDATOR_3: AccountId = 13;
 pub const ACA: CurrencyId = CurrencyId::Token(TokenSymbol::ACA);
 pub const LDOT: CurrencyId = CurrencyId::Token(TokenSymbol::LDOT);
 
@@ -49,31 +47,12 @@ mod homa_validator_list {
 	pub use super::super::*;
 }
 
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig as frame_system::DefaultConfig)]
 impl frame_system::Config for Runtime {
-	type RuntimeOrigin = RuntimeOrigin;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type RuntimeCall = RuntimeCall;
-	type Hash = H256;
-	type Hashing = ::sp_runtime::traits::BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
-	type RuntimeEvent = RuntimeEvent;
-	type BlockHashCount = ConstU64<250>;
-	type BlockWeights = ();
-	type BlockLength = ();
-	type Version = ();
-	type PalletInfo = PalletInfo;
+	type Block = Block;
 	type AccountData = pallet_balances::AccountData<Balance>;
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type DbWeight = ();
-	type BaseCallFilter = Everything;
-	type SystemWeightInfo = ();
-	type SS58Prefix = ();
-	type OnSetCode = ();
-	type MaxConsumers = ConstU32<16>;
 }
 
 parameter_type_with_key! {
@@ -106,9 +85,9 @@ impl pallet_balances::Config for Runtime {
 	type MaxReserves = ();
 	type ReserveIdentifier = [u8; 8];
 	type WeightInfo = ();
-	type HoldIdentifier = ();
+	type RuntimeHoldReason = RuntimeHoldReason;
+	type RuntimeFreezeReason = RuntimeFreezeReason;
 	type FreezeIdentifier = ();
-	type MaxHolds = ();
 	type MaxFreezes = ();
 }
 
@@ -127,52 +106,6 @@ impl orml_currencies::Config for Runtime {
 	type WeightInfo = ();
 }
 
-thread_local! {
-	pub static SHARES: RefCell<HashMap<(AccountId, AccountId), Balance>> = RefCell::new(HashMap::new());
-	pub static ACCUMULATED_SLASH: RefCell<Balance> = RefCell::new(0);
-}
-
-pub struct MockOnSlash;
-impl Happened<Balance> for MockOnSlash {
-	fn happened(amount: &Balance) {
-		ACCUMULATED_SLASH.with(|v| *v.borrow_mut() += amount);
-	}
-}
-
-pub struct MockOnIncreaseGuarantee;
-impl Happened<(AccountId, AccountId, Balance)> for MockOnIncreaseGuarantee {
-	fn happened(info: &(AccountId, AccountId, Balance)) {
-		let (account_id, relaychain_id, amount) = info;
-		SHARES.with(|v| {
-			let mut old_map = v.borrow().clone();
-			if let Some(share) = old_map.get_mut(&(*account_id, *relaychain_id)) {
-				*share = share.saturating_add(*amount);
-			} else {
-				old_map.insert((*account_id, *relaychain_id), *amount);
-			};
-
-			*v.borrow_mut() = old_map;
-		});
-	}
-}
-
-pub struct MockOnDecreaseGuarantee;
-impl Happened<(AccountId, AccountId, Balance)> for MockOnDecreaseGuarantee {
-	fn happened(info: &(AccountId, AccountId, Balance)) {
-		let (account_id, relaychain_id, amount) = info;
-		SHARES.with(|v| {
-			let mut old_map = v.borrow().clone();
-			if let Some(share) = old_map.get_mut(&(*account_id, *relaychain_id)) {
-				*share = share.saturating_sub(*amount);
-			} else {
-				old_map.insert((*account_id, *relaychain_id), Default::default());
-			};
-
-			*v.borrow_mut() = old_map;
-		});
-	}
-}
-
 pub struct MockLiquidStakingExchangeProvider;
 impl ExchangeRateProvider for MockLiquidStakingExchangeProvider {
 	fn get_exchange_rate() -> ExchangeRate {
@@ -181,52 +114,33 @@ impl ExchangeRateProvider for MockLiquidStakingExchangeProvider {
 }
 
 parameter_types! {
-	pub static MockBlockNumberProvider: u64 = 0;
-}
-
-impl BlockNumberProvider for MockBlockNumberProvider {
-	type BlockNumber = u64;
-
-	fn current_block_number() -> Self::BlockNumber {
-		Self::get()
-	}
-}
-
-ord_parameter_types! {
-	pub const Admin: AccountId = 10;
+	pub static MockCurrentEra: EraIndex = 0;
+	pub ActiveSubAccountsIndexList: Vec<u16> = vec![0, 1, 2];
+	pub const BondingDuration: EraIndex = 28;
 }
 
 impl Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type RelaychainAccountId = AccountId;
+	type RelayChainAccountId = AccountId;
 	type LiquidTokenCurrency = LDOTCurrency;
 	type MinBondAmount = ConstU128<100>;
-	type BondingDuration = ConstU64<100>;
+	type BondingDuration = BondingDuration;
 	type ValidatorInsuranceThreshold = ConstU128<200>;
-	type FreezeOrigin = EnsureSignedBy<Admin, AccountId>;
-	type SlashOrigin = EnsureSignedBy<Admin, AccountId>;
-	type OnSlash = MockOnSlash;
+	type GovernanceOrigin = EnsureRoot<AccountId>;
 	type LiquidStakingExchangeRateProvider = MockLiquidStakingExchangeProvider;
+	type CurrentEra = MockCurrentEra;
 	type WeightInfo = ();
-	type OnIncreaseGuarantee = MockOnIncreaseGuarantee;
-	type OnDecreaseGuarantee = MockOnDecreaseGuarantee;
-	type BlockNumberProvider = MockBlockNumberProvider;
 }
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
 
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic
-	{
-		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
-		OrmlTokens: orml_tokens::{Pallet, Storage, Event<T>, Config<T>},
-		PalletBalances: pallet_balances::{Pallet, Call, Storage, Event<T>},
-		OrmlCurrencies: orml_currencies::{Pallet, Call},
-		HomaValidatorListModule: homa_validator_list::{Pallet, Call, Storage, Event<T>},
+	pub enum Runtime {
+		System: frame_system,
+		OrmlTokens: orml_tokens,
+		PalletBalances: pallet_balances,
+		OrmlCurrencies: orml_currencies,
+		HomaValidatorListModule: homa_validator_list,
 	}
 );
 
@@ -237,15 +151,15 @@ pub struct ExtBuilder {
 impl Default for ExtBuilder {
 	fn default() -> Self {
 		Self {
-			balances: vec![(ALICE, LDOT, 1000), (BOB, LDOT, 1000)],
+			balances: vec![(ALICE, LDOT, 1000), (BOB, LDOT, 1000), (CHARLIE, LDOT, 1000000)],
 		}
 	}
 }
 
 impl ExtBuilder {
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		orml_tokens::GenesisConfig::<Runtime> {
@@ -254,6 +168,10 @@ impl ExtBuilder {
 		.assimilate_storage(&mut t)
 		.unwrap();
 
-		t.into()
+		let mut ext = sp_io::TestExternalities::new(t);
+		ext.execute_with(|| {
+			System::set_block_number(1);
+		});
+		ext
 	}
 }

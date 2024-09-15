@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,9 +16,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use codec::{Decode, Encode};
 use frame_support::dispatch::DispatchInfo;
+use frame_system::pallet_prelude::*;
 use module_support::AddressMapping;
+use parity_scale_codec::{Decode, Encode};
 use scale_info::TypeInfo;
 use sp_runtime::{
 	traits::{DispatchInfoOf, Dispatchable, One, SignedExtension, Zero},
@@ -40,11 +41,11 @@ use sp_std::vec;
 #[scale_info(skip_type_params(T))]
 pub struct CheckNonce<T: frame_system::Config + module_evm::Config> {
 	#[codec(compact)]
-	pub nonce: T::Index,
+	pub nonce: T::Nonce,
 	#[codec(skip)]
 	pub is_eth_tx: bool,
 	#[codec(skip)]
-	pub eth_tx_valid_until: T::BlockNumber,
+	pub eth_tx_valid_until: BlockNumberFor<T>,
 }
 
 impl<T: frame_system::Config + module_evm::Config> Default for CheckNonce<T> {
@@ -59,7 +60,7 @@ impl<T: frame_system::Config + module_evm::Config> Default for CheckNonce<T> {
 
 impl<T: frame_system::Config + module_evm::Config> CheckNonce<T> {
 	/// utility constructor. Used only in client/factory code.
-	pub fn from(nonce: T::Index) -> Self {
+	pub fn from(nonce: T::Nonce) -> Self {
 		Self {
 			nonce,
 			is_eth_tx: false,
@@ -67,7 +68,7 @@ impl<T: frame_system::Config + module_evm::Config> CheckNonce<T> {
 		}
 	}
 
-	pub fn mark_as_ethereum_tx(&mut self, valid_until: T::BlockNumber) {
+	pub fn mark_as_ethereum_tx(&mut self, valid_until: BlockNumberFor<T>) {
 		self.is_eth_tx = true;
 		self.eth_tx_valid_until = valid_until;
 	}
@@ -119,7 +120,10 @@ where
 			let evm_nonce = module_evm::Accounts::<T>::get(address)
 				.map(|x| x.nonce)
 				.unwrap_or_default();
-			if self.nonce != evm_nonce {
+
+			if cfg!(feature = "tracing") {
+				// skip check when enable tracing feature
+			} else if self.nonce != evm_nonce {
 				return Err(if self.nonce < evm_nonce {
 					InvalidTransaction::Stale
 				} else {
@@ -135,7 +139,7 @@ where
 			}
 			.into());
 		}
-		account.nonce += T::Index::one();
+		account.nonce += T::Nonce::one();
 		frame_system::Account::<T>::insert(who, account);
 		Ok(())
 	}
@@ -154,7 +158,10 @@ where
 			let evm_nonce = module_evm::Accounts::<T>::get(address)
 				.map(|x| x.nonce)
 				.unwrap_or_default();
-			if self.nonce < evm_nonce {
+
+			if cfg!(feature = "tracing") {
+				// skip check when enable tracing feature
+			} else if self.nonce < evm_nonce {
 				return InvalidTransaction::Stale.into();
 			}
 

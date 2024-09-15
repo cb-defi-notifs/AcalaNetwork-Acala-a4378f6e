@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -40,6 +40,7 @@ pub mod emergency_shutdown;
 pub mod evm;
 pub mod evm_accounts;
 pub mod homa;
+pub mod homa_validator_list;
 pub mod honzon;
 pub mod idle_scheduler;
 pub mod incentives;
@@ -54,7 +55,6 @@ pub mod transaction_payment;
 // orml benchmarking
 pub mod auction;
 pub mod authority;
-pub mod oracle;
 pub mod tokens;
 pub mod vesting;
 

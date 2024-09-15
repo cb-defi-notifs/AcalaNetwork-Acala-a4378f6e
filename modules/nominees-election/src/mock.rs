@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -24,47 +24,44 @@ use super::*;
 
 use crate as nominees_election;
 use frame_support::{
-	construct_runtime, ord_parameter_types, parameter_types,
-	traits::{ConstU128, ConstU32, ConstU64, Everything, Nothing},
+	construct_runtime, derive_impl, ord_parameter_types, parameter_types,
+	traits::{ConstU128, ConstU32, Nothing},
 };
+use frame_system::EnsureRoot;
 use orml_traits::parameter_type_with_key;
 use primitives::{Amount, CurrencyId, TokenSymbol};
-use sp_core::H256;
-use sp_runtime::{testing::Header, traits::IdentityLookup};
+use sp_runtime::{traits::IdentityLookup, BuildStorage};
+use std::collections::HashMap;
 
 pub type AccountId = u128;
 pub type BlockNumber = u64;
 
 pub const ALICE: AccountId = 0;
 pub const BOB: AccountId = 1;
+pub const CHARLIE: AccountId = 2;
+pub const DAVE: AccountId = 3;
+pub const EVE: AccountId = 4;
+pub const NOMINATEE_1: AccountId = 10;
+pub const NOMINATEE_2: AccountId = 11;
+pub const NOMINATEE_3: AccountId = 12;
+pub const NOMINATEE_4: AccountId = 13;
+pub const NOMINATEE_5: AccountId = 14;
+pub const NOMINATEE_6: AccountId = 15;
+pub const NOMINATEE_7: AccountId = 16;
+pub const NOMINATEE_8: AccountId = 17;
+pub const NOMINATEE_9: AccountId = 18;
+pub const NOMINATEE_10: AccountId = 19;
+pub const NOMINATEE_11: AccountId = 20;
+pub const NOMINATEE_12: AccountId = 21;
 pub const ACA: CurrencyId = CurrencyId::Token(TokenSymbol::ACA);
 pub const LDOT: CurrencyId = CurrencyId::Token(TokenSymbol::LDOT);
 
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig as frame_system::DefaultConfig)]
 impl frame_system::Config for Runtime {
-	type RuntimeOrigin = RuntimeOrigin;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type RuntimeCall = RuntimeCall;
-	type Hash = H256;
-	type Hashing = ::sp_runtime::traits::BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
-	type RuntimeEvent = RuntimeEvent;
-	type BlockHashCount = ConstU64<250>;
-	type BlockWeights = ();
-	type BlockLength = ();
-	type Version = ();
-	type PalletInfo = PalletInfo;
+	type Block = Block;
 	type AccountData = pallet_balances::AccountData<Balance>;
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type DbWeight = ();
-	type BaseCallFilter = Everything;
-	type SystemWeightInfo = ();
-	type SS58Prefix = ();
-	type OnSetCode = ();
-	type MaxConsumers = ConstU32<16>;
 }
 
 parameter_type_with_key! {
@@ -101,9 +98,9 @@ impl pallet_balances::Config for Runtime {
 	type MaxReserves = ();
 	type ReserveIdentifier = [u8; 8];
 	type WeightInfo = ();
-	type HoldIdentifier = ();
+	type RuntimeHoldReason = RuntimeHoldReason;
+	type RuntimeFreezeReason = RuntimeFreezeReason;
 	type FreezeIdentifier = ();
-	type MaxHolds = ();
 	type MaxFreezes = ();
 }
 
@@ -126,10 +123,51 @@ parameter_types! {
 	pub const PalletId: LockIdentifier = *b"1       ";
 }
 
-pub struct MockNomineeFilter;
-impl Contains<AccountId> for MockNomineeFilter {
+parameter_types! {
+	pub static Shares: HashMap<AccountId, Balance> = HashMap::new();
+	pub static InvalidNominees: Vec<AccountId> = vec![];
+	pub static MockCurrentEra: EraIndex = 0;
+}
+
+pub struct MockOnBonded;
+impl Handler<(AccountId, Balance)> for MockOnBonded {
+	fn handle(info: &(AccountId, Balance)) -> DispatchResult {
+		let (account_id, amount) = info;
+		Shares::mutate(|v| {
+			let mut old_map = v.clone();
+			if let Some(share) = old_map.get_mut(account_id) {
+				*share = share.saturating_add(*amount);
+			} else {
+				old_map.insert(*account_id, *amount);
+			};
+
+			*v = old_map;
+		});
+		Ok(())
+	}
+}
+
+pub struct MockOnUnbonded;
+impl Handler<(AccountId, Balance)> for MockOnUnbonded {
+	fn handle(info: &(AccountId, Balance)) -> DispatchResult {
+		let (account_id, amount) = info;
+		Shares::mutate(|v| {
+			let mut old_map = v.clone();
+			if let Some(share) = old_map.get_mut(account_id) {
+				*share = share.saturating_sub(*amount);
+			} else {
+				old_map.insert(*account_id, Default::default());
+			};
+
+			*v = old_map;
+		});
+		Ok(())
+	}
+}
+
+impl Contains<AccountId> for InvalidNominees {
 	fn contains(a: &AccountId) -> bool {
-		(0..=6).contains(a)
+		!Self::get().contains(a)
 	}
 }
 
@@ -140,26 +178,25 @@ impl Config for Runtime {
 	type PalletId = PalletId;
 	type MinBond = ConstU128<5>;
 	type BondingDuration = ConstU32<4>;
-	type NominateesCount = ConstU32<5>;
+	type MaxNominateesCount = ConstU32<5>;
 	type MaxUnbondingChunks = ConstU32<3>;
-	type NomineeFilter = MockNomineeFilter;
+	type NomineeFilter = InvalidNominees;
+	type GovernanceOrigin = EnsureRoot<AccountId>;
+	type OnBonded = MockOnBonded;
+	type OnUnbonded = MockOnUnbonded;
+	type CurrentEra = MockCurrentEra;
 	type WeightInfo = ();
 }
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
 
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic
-	{
-		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
-		NomineesElectionModule: nominees_election::{Pallet, Call, Storage, Event<T>},
-		TokensModule: orml_tokens::{Pallet, Storage, Event<T>, Config<T>},
-		PalletBalances: pallet_balances::{Pallet, Call, Storage, Event<T>},
-		OrmlCurrencies: orml_currencies::{Pallet, Call},
+	pub enum Runtime {
+		System: frame_system,
+		NomineesElectionModule: nominees_election,
+		TokensModule: orml_tokens,
+		PalletBalances: pallet_balances,
+		OrmlCurrencies: orml_currencies,
 	}
 );
 
@@ -170,15 +207,21 @@ pub struct ExtBuilder {
 impl Default for ExtBuilder {
 	fn default() -> Self {
 		Self {
-			balances: vec![(ALICE, LDOT, 1000), (BOB, LDOT, 1000)],
+			balances: vec![
+				(ALICE, LDOT, 1000),
+				(BOB, LDOT, 1000),
+				(CHARLIE, LDOT, 1000),
+				(DAVE, LDOT, 1000),
+				(EVE, LDOT, 1000),
+			],
 		}
 	}
 }
 
 impl ExtBuilder {
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		orml_tokens::GenesisConfig::<Runtime> {
@@ -187,6 +230,10 @@ impl ExtBuilder {
 		.assimilate_storage(&mut t)
 		.unwrap();
 
-		t.into()
+		let mut ext = sp_io::TestExternalities::new(t);
+		ext.execute_with(|| {
+			System::set_block_number(1);
+		});
+		ext
 	}
 }

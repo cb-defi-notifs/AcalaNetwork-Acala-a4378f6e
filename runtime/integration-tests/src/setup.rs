@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,36 +16,42 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-pub use codec::{Decode, Encode};
 use cumulus_test_relay_sproof_builder::RelayStateSproofBuilder;
-use frame_support::traits::{GenesisBuild, OnFinalize, OnIdle, OnInitialize};
-pub use frame_support::{assert_noop, assert_ok, traits::Currency};
+use frame_support::traits::{OnFinalize, OnIdle, OnInitialize};
+pub use frame_support::{
+	assert_noop, assert_ok,
+	traits::{Currency as PalletCurrency, Get},
+};
 pub use frame_system::RawOrigin;
+pub use parity_scale_codec::{Decode, Encode};
+pub use primitives::TradingPair;
 use runtime_common::evm_genesis;
+pub use runtime_common::{
+	cent, dollar, millicent, FixedRateOfAsset, MaxTipsOfPriority, ProxyType, Ratio, TipPerWeightStep, ACA, AUSD, DOT,
+	LDOT,
+};
+pub use xcm::v4::{prelude::*, Weight as XcmWeight};
+pub use xcm_executor::XcmExecutor;
 
 pub use module_support::{
-	mocks::MockAddressMapping, AddressMapping, CDPTreasury, DEXManager, Price, Rate, Ratio, RiskManager,
+	mocks::MockAddressMapping, AddressMapping, CDPTreasury, DEXManager, Price, Rate, RiskManager,
 };
 
-pub use cumulus_pallet_parachain_system::RelaychainDataProvider;
 pub use orml_traits::{location::RelativeLocations, Change, GetByKey, MultiCurrency};
 
+pub use insta::assert_debug_snapshot;
 pub use primitives::{
 	currency::*,
-	evm::{
-		CHAIN_ID_ACALA_MAINNET, CHAIN_ID_ACALA_TESTNET, CHAIN_ID_KARURA_MAINNET, CHAIN_ID_KARURA_TESTNET,
-		CHAIN_ID_MANDALA,
-	},
+	evm::{CHAIN_ID_ACALA_TESTNET, CHAIN_ID_KARURA_TESTNET, CHAIN_ID_MANDALA},
 };
 use sp_consensus_aura::AURA_ENGINE_ID;
 pub use sp_core::H160;
 use sp_io::hashing::keccak_256;
 pub use sp_runtime::{
-	traits::{AccountIdConversion, BadOrigin, BlakeTwo256, Convert, Hash, Zero},
-	Digest, DigestItem, DispatchError, DispatchResult, FixedPointNumber, FixedU128, MultiAddress, Perbill, Permill,
+	traits::{AccountIdConversion, BadOrigin, BlakeTwo256, Convert, Hash, Header, Zero},
+	BuildStorage, Digest, DigestItem, DispatchError, DispatchResult, FixedPointNumber, FixedU128, MultiAddress,
+	Perbill, Permill,
 };
-
-pub use xcm::v3::prelude::*;
 
 #[cfg(feature = "with-mandala-runtime")]
 pub use mandala_imports::*;
@@ -54,25 +60,21 @@ mod mandala_imports {
 	pub use mandala_runtime::xcm_config::*;
 	use mandala_runtime::AlternativeFeeSurplus;
 	pub use mandala_runtime::{
-		create_x2_parachain_multilocation, get_all_module_accounts, AcalaOracle, AcalaSwap, AccountId, AggregatedDex,
-		AssetRegistry, AuctionManager, Aura, Authority, AuthoritysOriginId, Authorship, Balance, Balances, BlockNumber,
-		CDPEnginePalletId, CDPTreasuryPalletId, CdpEngine, CdpTreasury, CollatorSelection, CreateClassDeposit,
-		CreateTokenDeposit, Currencies, CurrencyId, DataDepositPerByte, DealWithFees, DefaultDebitExchangeRate,
-		DefaultExchangeRate, Dex, EmergencyShutdown, EvmAccounts, ExistentialDeposits, FinancialCouncil, Get,
-		GetNativeCurrencyId, Homa, Honzon, IdleScheduler, Loans, MaxTipsOfPriority, MinRewardDistributeAmount,
-		MinimumDebitValue, MultiLocation, NativeTokenExistentialDeposit, NetworkId, NftPalletId, OneDay, OriginCaller,
-		PalletCurrency, ParachainInfo, ParachainSystem, Proxy, ProxyType, Ratio, Runtime, RuntimeCall, RuntimeEvent,
-		RuntimeOrigin, Scheduler, Session, SessionKeys, SessionManager, SevenDays, StableAsset, StableAssetPalletId,
-		System, Timestamp, TipPerWeightStep, TokenSymbol, Tokens, TransactionPayment, TransactionPaymentPalletId,
-		TreasuryAccount, TreasuryPalletId, UncheckedExtrinsic, Utility, Vesting, XcmInterface, EVM, NFT,
+		create_x2_parachain_location, get_all_module_accounts, AcalaOracle, AcalaSwap, AccountId, AggregatedDex,
+		AssetRegistry, AuctionManager, Aura, AuraExt, Authority, AuthoritysOriginId, Authorship, Balance, Balances,
+		BlockNumber, CDPEnginePalletId, CDPTreasuryPalletId, CdpEngine, CdpTreasury, CollatorSelection,
+		CreateClassDeposit, CreateTokenDeposit, Currencies, CurrencyId, DataDepositPerByte, DealWithFees,
+		DefaultDebitExchangeRate, DefaultExchangeRate, Dex, EmergencyShutdown, EvmAccounts, ExistentialDeposits,
+		FinancialCouncil, GetNativeCurrencyId, Homa, Honzon, IdleScheduler, Loans, MinRewardDistributeAmount,
+		MinimumDebitValue, NativeTokenExistentialDeposit, NftPalletId, OneDay, OriginCaller, ParachainInfo,
+		ParachainSystem, Proxy, Runtime, RuntimeCall, RuntimeEvent, RuntimeOrigin, Scheduler, Session, SessionKeys,
+		SessionManager, SevenDays, StableAsset, StableAssetPalletId, System, Timestamp, TokenSymbol, Tokens,
+		TransactionPayment, TransactionPaymentPalletId, TreasuryAccount, TreasuryPalletId, UncheckedExtrinsic, Utility,
+		Vesting, XcmInterface, EVM, NFT,
 	};
-	use module_transaction_payment::BuyWeightRateOfTransactionFeePool;
-	pub use primitives::TradingPair;
-	pub use runtime_common::{cent, dollar, millicent, FixedRateOfAsset, ACA, AUSD, DOT, LDOT};
-	pub use sp_runtime::traits::AccountIdConversion;
+	use primitives::TradingPair;
+	use runtime_common::{ACA, AUSD, DOT, LDOT};
 	use sp_runtime::Percent;
-	pub use xcm::v3::Weight as XcmWeight;
-	pub use xcm_executor::XcmExecutor;
 
 	parameter_types! {
 		pub EnabledTradingPairs: Vec<TradingPair> = vec![
@@ -93,9 +95,6 @@ mod mandala_imports {
 		primitives::DexShare::Token(TokenSymbol::DOT),
 	);
 	pub const NATIVE_TOKEN_SYMBOL: TokenSymbol = TokenSymbol::ACA;
-	pub type Trader = FixedRateOfFungible<DotPerSecond, ()>;
-	pub type TransactionFeePoolTrader =
-		FixedRateOfAsset<BaseRate, (), BuyWeightRateOfTransactionFeePool<Runtime, CurrencyIdConvert>>;
 	pub const ALTERNATIVE_SURPLUS: Percent = AlternativeFeeSurplus::get();
 }
 
@@ -103,29 +102,24 @@ mod mandala_imports {
 pub use karura_imports::*;
 #[cfg(feature = "with-karura-runtime")]
 mod karura_imports {
-	pub use frame_support::parameter_types;
+	use frame_support::parameter_types;
 	pub use karura_runtime::xcm_config::*;
 	use karura_runtime::AlternativeFeeSurplus;
 	pub use karura_runtime::{
-		constants::parachains, create_x2_parachain_multilocation, get_all_module_accounts, AcalaOracle, AcalaSwap,
-		AccountId, AggregatedDex, AssetRegistry, AuctionManager, Aura, Authority, AuthoritysOriginId, Balance,
+		constants::parachains, create_x2_parachain_location, get_all_module_accounts, AcalaOracle, AcalaSwap,
+		AccountId, AggregatedDex, AssetRegistry, AuctionManager, Aura, AuraExt, Authority, AuthoritysOriginId, Balance,
 		Balances, BlockNumber, CDPEnginePalletId, CDPTreasuryPalletId, CdpEngine, CdpTreasury, CreateClassDeposit,
 		CreateTokenDeposit, Currencies, CurrencyId, DataDepositPerByte, DefaultDebitExchangeRate, DefaultExchangeRate,
-		Dex, EmergencyShutdown, EvmAccounts, ExistentialDeposits, FinancialCouncil, Get, GetNativeCurrencyId, Homa,
-		Honzon, IdleScheduler, KaruraFoundationAccounts, Loans, MaxTipsOfPriority, MinimumDebitValue, MultiLocation,
-		NativeTokenExistentialDeposit, NetworkId, NftPalletId, OneDay, OriginCaller, ParachainAccount, ParachainInfo,
-		ParachainSystem, PolkadotXcm, Proxy, ProxyType, Ratio, Runtime, RuntimeCall, RuntimeEvent, RuntimeOrigin,
-		Scheduler, Session, SessionManager, SevenDays, StableAsset, StableAssetPalletId, System, Timestamp,
-		TipPerWeightStep, TokenSymbol, Tokens, TransactionPayment, TransactionPaymentPalletId, TreasuryPalletId,
-		Utility, Vesting, XTokens, XcmInterface, EVM, NFT,
+		Dex, EmergencyShutdown, EvmAccounts, ExistentialDeposits, FinancialCouncil, GetNativeCurrencyId, Homa, Honzon,
+		IdleScheduler, KaruraFoundationAccounts, Loans, MinimumDebitValue, NativeTokenExistentialDeposit, NftPalletId,
+		OneDay, OriginCaller, ParachainAccount, ParachainInfo, ParachainSystem, PolkadotXcm, Proxy, Runtime,
+		RuntimeCall, RuntimeEvent, RuntimeOrigin, Scheduler, Session, SessionManager, SevenDays, StableAsset,
+		StableAssetPalletId, System, Timestamp, TokenSymbol, Tokens, TransactionPayment, TransactionPaymentPalletId,
+		TreasuryPalletId, Utility, Vesting, XTokens, XcmInterface, EVM, NFT,
 	};
-	use module_transaction_payment::BuyWeightRateOfTransactionFeePool;
-	pub use primitives::TradingPair;
-	pub use runtime_common::{cent, dollar, millicent, FixedRateOfAsset, KAR, KSM, KUSD, LKSM};
-	pub use sp_runtime::traits::AccountIdConversion;
-	use sp_runtime::Percent;
-	pub use xcm::v3::Weight as XcmWeight;
-	pub use xcm_executor::XcmExecutor;
+	use primitives::TradingPair;
+	use runtime_common::{KAR, KSM, KUSD, LKSM};
+	use sp_runtime::{traits::AccountIdConversion, Percent};
 
 	parameter_types! {
 		pub EnabledTradingPairs: Vec<TradingPair> = vec![
@@ -146,9 +140,6 @@ mod karura_imports {
 		primitives::DexShare::Token(TokenSymbol::KSM),
 	);
 	pub const NATIVE_TOKEN_SYMBOL: TokenSymbol = TokenSymbol::KAR;
-	pub type Trader = FixedRateOfFungible<KsmPerSecond, ()>;
-	pub type TransactionFeePoolTrader =
-		FixedRateOfAsset<BaseRate, (), BuyWeightRateOfTransactionFeePool<Runtime, CurrencyIdConvert>>;
 	pub const ALTERNATIVE_SURPLUS: Percent = AlternativeFeeSurplus::get();
 }
 
@@ -159,26 +150,23 @@ mod acala_imports {
 	pub use acala_runtime::xcm_config::*;
 	use acala_runtime::AlternativeFeeSurplus;
 	pub use acala_runtime::{
-		constants::parachains, create_x2_parachain_multilocation, get_all_module_accounts, AcalaFoundationAccounts,
-		AcalaOracle, AcalaSwap, AccountId, AggregatedDex, AssetRegistry, AuctionManager, Aura, Authority,
+		constants::parachains, create_x2_parachain_location, get_all_module_accounts, AcalaFoundationAccounts,
+		AcalaOracle, AcalaSwap, AccountId, AggregatedDex, AssetRegistry, AuctionManager, Aura, AuraExt, Authority,
 		AuthoritysOriginId, Balance, Balances, BlockNumber, CDPEnginePalletId, CDPTreasuryPalletId, CdpEngine,
 		CdpTreasury, CreateClassDeposit, CreateTokenDeposit, Currencies, CurrencyId, DataDepositPerByte,
 		DefaultDebitExchangeRate, DefaultExchangeRate, Dex, EmergencyShutdown, EvmAccounts, ExistentialDeposits,
-		FinancialCouncil, Get, GetNativeCurrencyId, Homa, Honzon, IdleScheduler, Loans, MaxTipsOfPriority,
-		MinimumDebitValue, MultiLocation, NativeTokenExistentialDeposit, NetworkId, NftPalletId, OneDay, OriginCaller,
-		ParachainAccount, ParachainInfo, ParachainSystem, PolkadotXcm, Proxy, ProxyType, Ratio, Runtime, RuntimeCall,
-		RuntimeEvent, RuntimeOrigin, Scheduler, Session, SessionManager, SevenDays, StableAsset, StableAssetPalletId,
-		System, Timestamp, TipPerWeightStep, TokenSymbol, Tokens, TransactionPayment, TransactionPaymentPalletId,
-		TreasuryPalletId, Utility, Vesting, XTokens, XcmInterface, EVM, LCDOT, NFT,
+		FinancialCouncil, GetNativeCurrencyId, Homa, Honzon, IdleScheduler, Loans, MinimumDebitValue,
+		NativeTokenExistentialDeposit, NftPalletId, OneDay, OriginCaller, ParachainAccount, ParachainInfo,
+		ParachainSystem, PolkadotXcm, Proxy, Runtime, RuntimeCall, RuntimeEvent, RuntimeOrigin, Scheduler, Session,
+		SessionManager, SevenDays, StableAsset, StableAssetPalletId, System, Timestamp, TokenSymbol, Tokens,
+		TransactionPayment, TransactionPaymentPalletId, TreasuryPalletId, Utility, Vesting, XTokens, XcmInterface, EVM,
+		NFT,
 	};
-	pub use frame_support::parameter_types;
-	use module_transaction_payment::BuyWeightRateOfTransactionFeePool;
-	pub use primitives::TradingPair;
-	pub use runtime_common::{cent, dollar, millicent, FixedRateOfAsset, ACA, AUSD, DOT, LDOT};
-	pub use sp_runtime::traits::AccountIdConversion;
+	use frame_support::parameter_types;
+	use primitives::TradingPair;
+	use runtime_common::{ACA, AUSD, DOT, LCDOT, LDOT};
+	use sp_runtime::traits::AccountIdConversion;
 	use sp_runtime::Percent;
-	pub use xcm::v3::Weight as XcmWeight;
-	pub use xcm_executor::XcmExecutor;
 
 	parameter_types! {
 		pub EnabledTradingPairs: Vec<TradingPair> = vec![
@@ -201,9 +189,6 @@ mod acala_imports {
 		primitives::DexShare::Token(TokenSymbol::DOT),
 	);
 	pub const NATIVE_TOKEN_SYMBOL: TokenSymbol = TokenSymbol::ACA;
-	pub type Trader = FixedRateOfFungible<DotPerSecond, ()>;
-	pub type TransactionFeePoolTrader =
-		FixedRateOfAsset<BaseRate, (), BuyWeightRateOfTransactionFeePool<Runtime, CurrencyIdConvert>>;
 	pub const ALTERNATIVE_SURPLUS: Percent = AlternativeFeeSurplus::get();
 }
 
@@ -245,9 +230,26 @@ pub fn run_to_block(n: u32) {
 }
 
 pub fn set_relaychain_block_number(number: BlockNumber) {
+	AuraExt::on_initialize(number);
 	ParachainSystem::on_initialize(number);
 
-	let (relay_storage_root, proof) = RelayStateSproofBuilder::default().into_state_root_and_proof();
+	let mut sproof_builder = RelayStateSproofBuilder::default();
+
+	let parent_head_data = {
+		let header = cumulus_primitives_core::relay_chain::Header::new(
+			number,
+			sp_core::H256::from_low_u64_be(0),
+			sp_core::H256::from_low_u64_be(0),
+			Default::default(),
+			Default::default(),
+		);
+		cumulus_primitives_core::relay_chain::HeadData(header.encode())
+	};
+
+	sproof_builder.para_id = ParachainInfo::get().into();
+	sproof_builder.included_para_head = Some(parent_head_data.clone());
+
+	let (relay_storage_root, proof) = sproof_builder.into_state_root_and_proof();
 
 	assert_ok!(ParachainSystem::set_validation_data(
 		RuntimeOrigin::none(),
@@ -292,10 +294,18 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
+		let t = self.build_storage();
+
+		let mut ext = sp_io::TestExternalities::new(t);
+		ext.execute_with(|| System::set_block_number(1));
+		ext
+	}
+
+	pub fn build_storage(self) -> sp_core::storage::Storage {
 		let evm_genesis_accounts = evm_genesis(vec![]);
 
-		let mut t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		let native_currency_id = GetNativeCurrencyId::get();
@@ -379,25 +389,21 @@ impl ExtBuilder {
 			.assimilate_storage(&mut t)
 			.unwrap();
 
-		<parachain_info::GenesisConfig as GenesisBuild<Runtime>>::assimilate_storage(
-			&parachain_info::GenesisConfig {
-				parachain_id: self.parachain_id.into(),
-			},
-			&mut t,
-		)
+		parachain_info::GenesisConfig::<Runtime> {
+			_config: Default::default(),
+			parachain_id: self.parachain_id.into(),
+		}
+		.assimilate_storage(&mut t)
 		.unwrap();
 
-		<pallet_xcm::GenesisConfig as GenesisBuild<Runtime>>::assimilate_storage(
-			&pallet_xcm::GenesisConfig {
-				safe_xcm_version: Some(2),
-			},
-			&mut t,
-		)
+		pallet_xcm::GenesisConfig::<Runtime> {
+			_config: Default::default(),
+			safe_xcm_version: Some(2),
+		}
+		.assimilate_storage(&mut t)
 		.unwrap();
 
-		let mut ext = sp_io::TestExternalities::new(t);
-		ext.execute_with(|| System::set_block_number(1));
-		ext
+		t
 	}
 }
 

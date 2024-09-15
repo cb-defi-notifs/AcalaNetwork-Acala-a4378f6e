@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -19,12 +19,16 @@
 pub mod stack;
 pub mod state;
 pub mod storage_meter;
+pub mod tagged_runtime;
+
+#[cfg(feature = "tracing")]
+pub mod tracing;
 
 use crate::{BalanceOf, CallInfo, Config, CreateInfo};
-use frame_support::dispatch::DispatchError;
 use module_evm_utility::evm;
 pub use primitives::evm::{EvmAddress, Vicinity};
 use sp_core::{H160, H256};
+use sp_runtime::DispatchError;
 use sp_std::vec::Vec;
 
 pub trait Runner<T: Config> {

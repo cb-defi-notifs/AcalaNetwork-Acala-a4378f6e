@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -27,80 +27,49 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
 #![allow(clippy::collapsible_if)]
+#![allow(clippy::type_complexity)]
 
-use codec::MaxEncodedLen;
-use frame_support::{pallet_prelude::*, traits::Contains, transactional};
+use frame_support::pallet_prelude::*;
+use frame_support::traits::Contains;
 use frame_system::pallet_prelude::*;
-use orml_traits::{BasicCurrency, BasicLockableCurrency, Happened, LockIdentifier};
-use primitives::Balance;
+use module_support::{ExchangeRateProvider, Ratio};
+use orml_traits::{BasicCurrency, BasicLockableCurrency, LockIdentifier};
+use parity_scale_codec::MaxEncodedLen;
+use primitives::{Balance, EraIndex};
 use scale_info::TypeInfo;
 #[cfg(feature = "std")]
 use serde::{Deserialize, Serialize};
 use sp_runtime::{
-	traits::{BlockNumberProvider, Bounded, MaybeDisplay, MaybeSerializeDeserialize, Member, Zero},
+	traits::{Bounded, MaybeDisplay, MaybeSerializeDeserialize, Member, Zero},
 	DispatchResult, FixedPointNumber, RuntimeDebug,
 };
-use sp_std::{fmt::Debug, vec::Vec};
-use support::{ExchangeRateProvider, Ratio};
+use sp_std::{fmt::Debug, vec, vec::Vec};
 
 mod mock;
 mod tests;
+pub mod weights;
 
 pub use module::*;
+pub use weights::WeightInfo;
 
-pub const HOMA_VALIDATOR_LIST_ID: LockIdentifier = *b"acalahvl";
-
-pub trait WeightInfo {
-	fn bond() -> Weight;
-	fn unbond() -> Weight;
-	fn rebond() -> Weight;
-	fn withdraw_unbonded() -> Weight;
-	fn freeze(u: u32) -> Weight;
-	fn thaw() -> Weight;
-	fn slash() -> Weight;
-}
-
-// TODO: do benchmarking test.
-impl WeightInfo for () {
-	fn bond() -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-	fn unbond() -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-	fn rebond() -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-	fn withdraw_unbonded() -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-	fn freeze(_u: u32) -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-	fn thaw() -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-	fn slash() -> Weight {
-		Weight::from_parts(10_000, 0)
-	}
-}
+pub const HOMA_VALIDATOR_LIST_ID: LockIdentifier = *b"aca/hmvl";
 
 /// Insurance for a validator from a single address
 #[derive(Encode, Decode, Clone, Copy, RuntimeDebug, Default, PartialEq, Eq, MaxEncodedLen, TypeInfo)]
-pub struct Guarantee<BlockNumber> {
+pub struct Guarantee<EraIndex> {
 	/// The total tokens the validator has in insurance
 	total: Balance,
 	/// The number of tokens that are actively bonded for insurance
 	bonded: Balance,
 	/// The number of tokens that are in the process of unbonding for insurance
-	unbonding: Option<(Balance, BlockNumber)>,
+	unbonding: Option<(Balance, EraIndex)>,
 }
 
-impl<BlockNumber: PartialOrd> Guarantee<BlockNumber> {
+impl<EraIndex: PartialOrd> Guarantee<EraIndex> {
 	/// Take `unbonding` that are sufficiently old
-	fn consolidate_unbonding(mut self, current_block: BlockNumber) -> Self {
+	fn consolidate_unbonding(mut self, current_era: EraIndex) -> Self {
 		match self.unbonding {
-			Some((_, expired_block)) if expired_block <= current_block => {
+			Some((_, expired_era)) if expired_era <= current_era => {
 				self.unbonding = None;
 			}
 			_ => {}
@@ -145,15 +114,15 @@ impl<BlockNumber: PartialOrd> Guarantee<BlockNumber> {
 /// Information on a relay chain validator's slash
 #[derive(Encode, Decode, Clone, RuntimeDebug, Eq, PartialEq, MaxEncodedLen, TypeInfo)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
-pub struct SlashInfo<Balance, RelaychainAccountId> {
+pub struct SlashInfo<Balance, RelayChainAccountId> {
 	/// Address of a validator on the relay chain
-	validator: RelaychainAccountId,
+	pub validator: RelayChainAccountId,
 	/// The amount of tokens a validator has in backing on the relay chain
-	relaychain_token_amount: Balance,
+	pub relaychain_token_amount: Balance,
 }
 
 /// Validator insurance and frozen status
-#[derive(Encode, Decode, Clone, Copy, RuntimeDebug, Default, MaxEncodedLen, TypeInfo)]
+#[derive(Encode, Decode, Clone, Copy, RuntimeDebug, Default, MaxEncodedLen, TypeInfo, PartialEq)]
 pub struct ValidatorBacking {
 	/// Total insurance from all guarantors
 	total_insurance: Balance,
@@ -168,42 +137,41 @@ pub mod module {
 	pub trait Config: frame_system::Config {
 		/// The overarching event type.
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+
 		/// The AccountId of a relay chain account.
-		type RelaychainAccountId: Parameter
+		type RelayChainAccountId: Parameter
 			+ Member
 			+ MaybeSerializeDeserialize
 			+ Debug
 			+ MaybeDisplay
 			+ Ord
-			+ Default
 			+ MaxEncodedLen;
+
 		/// The liquid representation of the staking token on the relay chain.
 		type LiquidTokenCurrency: BasicLockableCurrency<Self::AccountId, Balance = Balance>;
-		#[pallet::constant]
+
 		/// The minimum amount of tokens that can be bonded to a validator.
+		#[pallet::constant]
 		type MinBondAmount: Get<Balance>;
+
+		/// The waiting eras when unbond token.
 		#[pallet::constant]
-		/// The number of blocks a token is bonded to a validator for.
-		type BondingDuration: Get<Self::BlockNumber>;
-		#[pallet::constant]
+		type BondingDuration: Get<EraIndex>;
+
 		/// The minimum amount of insurance a validator needs.
+		#[pallet::constant]
 		type ValidatorInsuranceThreshold: Get<Balance>;
-		/// The AccountId that can perform a freeze.
-		type FreezeOrigin: EnsureOrigin<Self::RuntimeOrigin>;
-		/// The AccountId that can perform a slash.
-		type SlashOrigin: EnsureOrigin<Self::RuntimeOrigin>;
-		/// Callback to be called when a slash occurs.
-		type OnSlash: Happened<Balance>;
+
+		/// Origin represented Governance
+		type GovernanceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
 		/// Exchange rate between staked token and liquid token equivalent.
 		type LiquidStakingExchangeRateProvider: ExchangeRateProvider;
-		type WeightInfo: WeightInfo;
-		/// Callback to be called when a validator's insurance increases.
-		type OnIncreaseGuarantee: Happened<(Self::AccountId, Self::RelaychainAccountId, Balance)>;
-		/// Callback to be called when a validator's insurance decreases.
-		type OnDecreaseGuarantee: Happened<(Self::AccountId, Self::RelaychainAccountId, Balance)>;
 
-		// The block number provider
-		type BlockNumberProvider: BlockNumberProvider<BlockNumber = Self::BlockNumber>;
+		/// Current era.
+		type CurrentEra: Get<EraIndex>;
+
+		type WeightInfo: WeightInfo;
 	}
 
 	#[pallet::error]
@@ -217,45 +185,45 @@ pub mod module {
 	#[pallet::generate_deposit(pub(crate) fn deposit_event)]
 	pub enum Event<T: Config> {
 		FreezeValidator {
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 		},
 		ThawValidator {
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 		},
 		BondGuarantee {
 			who: T::AccountId,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			bond: Balance,
 		},
 		UnbondGuarantee {
 			who: T::AccountId,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			bond: Balance,
 		},
 		WithdrawnGuarantee {
 			who: T::AccountId,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			bond: Balance,
 		},
 		SlashGuarantee {
 			who: T::AccountId,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			bond: Balance,
 		},
 	}
 
 	/// The slash guarantee deposits for relaychain validators.
 	///
-	/// Guarantees: double_map RelaychainAccountId, AccountId => Option<Guarantee>
+	/// Guarantees: double_map RelayChainAccountId, AccountId => Option<Guarantee>
 	#[pallet::storage]
 	#[pallet::getter(fn guarantees)]
 	pub type Guarantees<T: Config> = StorageDoubleMap<
 		_,
 		Blake2_128Concat,
-		T::RelaychainAccountId,
+		T::RelayChainAccountId,
 		Twox64Concat,
 		T::AccountId,
-		Guarantee<T::BlockNumber>,
+		Guarantee<EraIndex>,
 		OptionQuery,
 	>;
 
@@ -268,17 +236,17 @@ pub mod module {
 
 	/// Total deposit for validators.
 	///
-	/// ValidatorBackings: map RelaychainAccountId => Option<ValidatorBacking>
+	/// ValidatorBackings: map RelayChainAccountId => Option<ValidatorBacking>
 	#[pallet::storage]
 	#[pallet::getter(fn validator_backings)]
 	pub type ValidatorBackings<T: Config> =
-		StorageMap<_, Blake2_128Concat, T::RelaychainAccountId, ValidatorBacking, OptionQuery>;
+		StorageMap<_, Blake2_128Concat, T::RelayChainAccountId, ValidatorBacking, OptionQuery>;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -289,10 +257,9 @@ pub mod module {
 		/// - `amount`: the number of tokens to bond to the given validator
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::bond())]
-		#[transactional]
 		pub fn bond(
 			origin: OriginFor<T>,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			#[pallet::compact] amount: Balance,
 		) -> DispatchResult {
 			let guarantor = ensure_signed(origin)?;
@@ -329,10 +296,9 @@ pub mod module {
 		/// - `amount`: the number of tokens to unbond from the given validator
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::unbond())]
-		#[transactional]
 		pub fn unbond(
 			origin: OriginFor<T>,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			#[pallet::compact] amount: Balance,
 		) -> DispatchResult {
 			let guarantor = ensure_signed(origin)?;
@@ -346,8 +312,8 @@ pub mod module {
 						guarantee.bonded.is_zero() || guarantee.bonded >= T::MinBondAmount::get(),
 						Error::<T>::BelowMinBondAmount,
 					);
-					let expired_block = T::BlockNumberProvider::current_block_number() + T::BondingDuration::get();
-					guarantee.unbonding = Some((amount, expired_block));
+					let expired_era = T::CurrentEra::get() + T::BondingDuration::get();
+					guarantee.unbonding = Some((amount, expired_era));
 
 					Self::deposit_event(Event::UnbondGuarantee {
 						who: guarantor.clone(),
@@ -363,13 +329,12 @@ pub mod module {
 		/// Rebond tokens to a validator on the relay chain.
 		///
 		/// - `validator`: The AccountId of a validator on the relay chain to rebond to
-		/// - `amount`: The amount of tokens to to rebond to the given validator
+		/// - `amount`: The amount of tokens to rebond to the given validator
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::rebond())]
-		#[transactional]
 		pub fn rebond(
 			origin: OriginFor<T>,
-			validator: T::RelaychainAccountId,
+			validator: T::RelayChainAccountId,
 			#[pallet::compact] amount: Balance,
 		) -> DispatchResult {
 			let guarantor = ensure_signed(origin)?;
@@ -389,8 +354,7 @@ pub mod module {
 		/// - `validator`: The AccountId of a validator on the relay chain to withdraw from
 		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::withdraw_unbonded())]
-		#[transactional]
-		pub fn withdraw_unbonded(origin: OriginFor<T>, validator: T::RelaychainAccountId) -> DispatchResult {
+		pub fn withdraw_unbonded(origin: OriginFor<T>, validator: T::RelayChainAccountId) -> DispatchResult {
 			let guarantor = ensure_signed(origin)?;
 			ensure!(
 				!Self::validator_backings(&validator).unwrap_or_default().is_frozen,
@@ -398,7 +362,7 @@ pub mod module {
 			);
 			Self::update_guarantee(&guarantor, &validator, |guarantee| -> DispatchResult {
 				let old_total = guarantee.total;
-				*guarantee = guarantee.consolidate_unbonding(T::BlockNumberProvider::current_block_number());
+				*guarantee = guarantee.consolidate_unbonding(T::CurrentEra::get());
 				let new_total = guarantee
 					.bonded
 					.saturating_add(guarantee.unbonding.unwrap_or_default().0);
@@ -421,9 +385,8 @@ pub mod module {
 		/// - `validators`: The AccountIds of the validators on the relay chain to freeze
 		#[pallet::call_index(4)]
 		#[pallet::weight(T::WeightInfo::freeze(validators.len() as u32))]
-		#[transactional]
-		pub fn freeze(origin: OriginFor<T>, validators: Vec<T::RelaychainAccountId>) -> DispatchResult {
-			T::FreezeOrigin::ensure_origin(origin)?;
+		pub fn freeze(origin: OriginFor<T>, validators: Vec<T::RelayChainAccountId>) -> DispatchResult {
+			T::GovernanceOrigin::ensure_origin(origin)?;
 			validators.iter().for_each(|validator| {
 				ValidatorBackings::<T>::mutate_exists(validator, |maybe_validator| {
 					let mut v = maybe_validator.take().unwrap_or_default();
@@ -444,12 +407,9 @@ pub mod module {
 		///
 		/// - `validators`: The AccountIds of the validators on the relay chain to unfreeze
 		#[pallet::call_index(5)]
-		#[pallet::weight(T::WeightInfo::thaw())]
-		#[transactional]
-		pub fn thaw(origin: OriginFor<T>, validators: Vec<T::RelaychainAccountId>) -> DispatchResult {
-			// Using SlashOrigin instead of FreezeOrigin so that un-freezing requires more council members than
-			// freezing
-			T::SlashOrigin::ensure_origin(origin)?;
+		#[pallet::weight(T::WeightInfo::thaw(validators.len() as u32))]
+		pub fn thaw(origin: OriginFor<T>, validators: Vec<T::RelayChainAccountId>) -> DispatchResult {
+			T::GovernanceOrigin::ensure_origin(origin)?;
 			validators.iter().for_each(|validator| {
 				ValidatorBackings::<T>::mutate_exists(validator, |maybe_validator| {
 					let mut v = maybe_validator.take().unwrap_or_default();
@@ -466,14 +426,13 @@ pub mod module {
 		}
 
 		/// Slash validators on the relay chain.
-		/// Ensures the the caller can perform a slash.
+		/// Ensures the caller can perform a slash.
 		///
 		/// - `slashes`: The SlashInfos of the validators to be slashed
 		#[pallet::call_index(6)]
-		#[pallet::weight(T::WeightInfo::slash())]
-		#[transactional]
-		pub fn slash(origin: OriginFor<T>, slashes: Vec<SlashInfo<Balance, T::RelaychainAccountId>>) -> DispatchResult {
-			T::SlashOrigin::ensure_origin(origin)?;
+		#[pallet::weight(T::WeightInfo::slash(slashes.len() as u32))]
+		pub fn slash(origin: OriginFor<T>, slashes: Vec<SlashInfo<Balance, T::RelayChainAccountId>>) -> DispatchResult {
+			T::GovernanceOrigin::ensure_origin(origin)?;
 			let liquid_staking_exchange_rate = T::LiquidStakingExchangeRateProvider::get_exchange_rate();
 			let staking_liquid_exchange_rate = liquid_staking_exchange_rate.reciprocal().unwrap_or_default();
 			let mut actual_total_slashing: Balance = Zero::zero();
@@ -509,7 +468,6 @@ pub mod module {
 				}
 			}
 
-			T::OnSlash::happened(&actual_total_slashing);
 			Ok(())
 		}
 	}
@@ -518,8 +476,8 @@ pub mod module {
 impl<T: Config> Pallet<T> {
 	fn update_guarantee(
 		guarantor: &T::AccountId,
-		validator: &T::RelaychainAccountId,
-		f: impl FnOnce(&mut Guarantee<T::BlockNumber>) -> DispatchResult,
+		validator: &T::RelayChainAccountId,
+		f: impl FnOnce(&mut Guarantee<EraIndex>) -> DispatchResult,
 	) -> DispatchResult {
 		Guarantees::<T>::try_mutate_exists(validator, guarantor, |maybe_guarantee| -> DispatchResult {
 			let mut guarantee = maybe_guarantee.take().unwrap_or_default();
@@ -549,12 +507,10 @@ impl<T: Config> Pallet<T> {
 										let gap = new_total - old_total;
 										vb.total_insurance = vb.total_insurance.saturating_add(gap);
 										tl = tl.saturating_add(gap);
-										T::OnIncreaseGuarantee::happened(&(guarantor.clone(), validator.clone(), gap));
 									} else {
 										let gap = old_total - new_total;
 										vb.total_insurance = vb.total_insurance.saturating_sub(gap);
 										tl = tl.saturating_sub(gap);
-										T::OnDecreaseGuarantee::happened(&(guarantor.clone(), validator.clone(), gap));
 									};
 
 									if tl.is_zero() {
@@ -579,11 +535,9 @@ impl<T: Config> Pallet<T> {
 	}
 }
 
-impl<T: Config> Contains<T::RelaychainAccountId> for Pallet<T> {
-	fn contains(relaychain_account_id: &T::RelaychainAccountId) -> bool {
-		Self::validator_backings(relaychain_account_id)
-			.unwrap_or_default()
-			.total_insurance
-			>= T::ValidatorInsuranceThreshold::get()
+impl<T: Config> Contains<T::RelayChainAccountId> for Pallet<T> {
+	fn contains(account: &T::RelayChainAccountId) -> bool {
+		ValidatorBackings::<T>::get(account)
+			.is_some_and(|vb| vb.total_insurance >= T::ValidatorInsuranceThreshold::get() && !vb.is_frozen)
 	}
 }

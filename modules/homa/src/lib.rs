@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -21,9 +21,11 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
 
-use frame_support::{log, pallet_prelude::*, transactional, PalletId};
+use frame_support::{pallet_prelude::*, transactional, PalletId};
 use frame_system::{ensure_signed, pallet_prelude::*};
-use module_support::{ExchangeRate, ExchangeRateProvider, FractionalRate, HomaManager, HomaSubAccountXcm, Rate, Ratio};
+use module_support::{
+	ExchangeRate, ExchangeRateProvider, FractionalRate, HomaManager, HomaSubAccountXcm, NomineesProvider, Rate, Ratio,
+};
 use orml_traits::MultiCurrency;
 use primitives::{Balance, CurrencyId, EraIndex};
 use scale_info::TypeInfo;
@@ -39,7 +41,6 @@ use sp_std::{cmp::Ordering, convert::From, prelude::*, vec, vec::Vec};
 pub use module::*;
 pub use weights::WeightInfo;
 
-pub mod migrations;
 mod mock;
 mod tests;
 pub mod weights;
@@ -47,6 +48,11 @@ pub mod weights;
 #[frame_support::pallet]
 pub mod module {
 	use super::*;
+
+	pub type RelayChainAccountIdOf<T> = <<T as Config>::XcmInterface as HomaSubAccountXcm<
+		<T as frame_system::Config>::AccountId,
+		Balance,
+	>>::RelayChainAccountId;
 
 	/// The subaccount's staking ledger which kept by Homa protocol
 	#[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default)]
@@ -145,13 +151,19 @@ pub mod module {
 		type RedeemThreshold: Get<Balance>;
 
 		/// Block number provider for the relaychain.
-		type RelayChainBlockNumber: BlockNumberProvider<BlockNumber = Self::BlockNumber>;
+		type RelayChainBlockNumber: BlockNumberProvider<BlockNumber = BlockNumberFor<Self>>;
 
 		/// The XcmInterface to manage the staking of sub-account on relaychain.
 		type XcmInterface: HomaSubAccountXcm<Self::AccountId, Balance>;
 
+		/// The limit for process redeem requests when bump era.
+		#[pallet::constant]
+		type ProcessRedeemRequestsLimit: Get<u32>;
+
 		/// Weight information for the extrinsics in this module.
 		type WeightInfo: WeightInfo;
+
+		type NominationsProvider: NomineesProvider<RelayChainAccountIdOf<Self>>;
 	}
 
 	#[pallet::error]
@@ -239,9 +251,22 @@ pub mod module {
 		/// The fast match fee rate has been updated.
 		FastMatchFeeRateUpdated { fast_match_fee_rate: Rate },
 		/// The relaychain block number of last era bumped updated.
-		LastEraBumpedBlockUpdated { last_era_bumped_block: T::BlockNumber },
+		LastEraBumpedBlockUpdated { last_era_bumped_block: BlockNumberFor<T> },
 		/// The frequency to bump era has been updated.
-		BumpEraFrequencyUpdated { frequency: T::BlockNumber },
+		BumpEraFrequencyUpdated { frequency: BlockNumberFor<T> },
+		/// The interval eras to nominate.
+		NominateIntervalEraUpdated { eras: EraIndex },
+		/// Withdraw unbonded from RelayChain
+		HomaWithdrawUnbonded { sub_account_index: u16, amount: Balance },
+		/// Unbond staking currency of sub account on RelayChain
+		HomaUnbond { sub_account_index: u16, amount: Balance },
+		/// Transfer staking currency to sub account and bond on RelayChain
+		HomaBondExtra { sub_account_index: u16, amount: Balance },
+		/// Nominate validators on RelayChain
+		HomaNominate {
+			sub_account_index: u16,
+			nominations: Vec<RelayChainAccountIdOf<T>>,
+		},
 	}
 
 	/// The current era of relaychain
@@ -250,13 +275,6 @@ pub mod module {
 	#[pallet::storage]
 	#[pallet::getter(fn relay_chain_current_era)]
 	pub type RelayChainCurrentEra<T: Config> = StorageValue<_, EraIndex, ValueQuery>;
-
-	// /// The latest processed era of Homa, it should be always <= RelayChainCurrentEra
-	// ///
-	// /// ProcessedEra : EraIndex
-	// #[pallet::storage]
-	// #[pallet::getter(fn processed_era)]
-	// pub type ProcessedEra<T: Config> = StorageValue<_, EraIndex, ValueQuery>;
 
 	/// The staking ledger of Homa subaccounts.
 	///
@@ -341,35 +359,42 @@ pub mod module {
 
 	/// The relaychain block number of last era bumped.
 	///
-	/// LastEraBumpedBlock: value: T::BlockNumber
+	/// LastEraBumpedBlock: value: BlockNumberFor<T>
 	#[pallet::storage]
 	#[pallet::getter(fn last_era_bumped_block)]
-	pub type LastEraBumpedBlock<T: Config> = StorageValue<_, T::BlockNumber, ValueQuery>;
+	pub type LastEraBumpedBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
-	/// The internal of relaychain block number of relaychain to bump local current era.
+	/// The interval of relaychain block number of relaychain to bump local current era.
 	///
-	/// LastEraBumpedRelayChainBlock: value: T::BlockNumber
+	/// LastEraBumpedRelayChainBlock: value: BlockNumberFor<T>
 	#[pallet::storage]
 	#[pallet::getter(fn bump_era_frequency)]
-	pub type BumpEraFrequency<T: Config> = StorageValue<_, T::BlockNumber, ValueQuery>;
+	pub type BumpEraFrequency<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+	/// The interval of eras to nominate on relaychain.
+	///
+	/// NominateIntervalEra: value: EraIndex
+	#[pallet::storage]
+	#[pallet::getter(fn nominate_interval_era)]
+	pub type NominateIntervalEra<T: Config> = StorageValue<_, EraIndex, ValueQuery>;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
-		fn on_initialize(_: T::BlockNumber) -> Weight {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_: BlockNumberFor<T>) -> Weight {
 			let bump_era_number = Self::era_amount_should_to_bump(T::RelayChainBlockNumber::current_block_number());
 			if !bump_era_number.is_zero() {
-				let _ = Self::bump_current_era(bump_era_number);
+				let res = Self::bump_current_era(bump_era_number);
 				debug_assert_eq!(
 					TotalStakingBonded::<T>::get(),
 					StakingLedgers::<T>::iter().fold(Zero::zero(), |total_bonded: Balance, (_, ledger)| {
 						total_bonded.saturating_add(ledger.bonded)
 					})
 				);
-				<T as Config>::WeightInfo::on_initialize_with_bump_era()
+				<T as Config>::WeightInfo::on_initialize_with_bump_era(res.unwrap_or_default())
 			} else {
 				<T as Config>::WeightInfo::on_initialize()
 			}
@@ -384,7 +409,6 @@ pub mod module {
 		/// - `amount`: The amount of staking currency used to mint liquid currency.
 		#[pallet::call_index(0)]
 		#[pallet::weight(< T as Config >::WeightInfo::mint())]
-		#[transactional]
 		pub fn mint(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let minter = ensure_signed(origin)?;
 			Self::do_mint(minter, amount)
@@ -406,7 +430,6 @@ pub mod module {
 		///   rate as fee.
 		#[pallet::call_index(1)]
 		#[pallet::weight(< T as Config >::WeightInfo::request_redeem())]
-		#[transactional]
 		pub fn request_redeem(
 			origin: OriginFor<T>,
 			#[pallet::compact] amount: Balance,
@@ -422,7 +445,6 @@ pub mod module {
 		/// - `redeemer_list`: The list of redeem requests to execute fast redeem.
 		#[pallet::call_index(2)]
 		#[pallet::weight(< T as Config >::WeightInfo::fast_match_redeems(redeemer_list.len() as u32))]
-		#[transactional]
 		pub fn fast_match_redeems(origin: OriginFor<T>, redeemer_list: Vec<T::AccountId>) -> DispatchResult {
 			let _ = ensure_signed(origin)?;
 
@@ -439,7 +461,6 @@ pub mod module {
 		/// - `redeemer`: redeemer.
 		#[pallet::call_index(3)]
 		#[pallet::weight(< T as Config >::WeightInfo::claim_redemption())]
-		#[transactional]
 		pub fn claim_redemption(origin: OriginFor<T>, redeemer: T::AccountId) -> DispatchResult {
 			let _ = ensure_signed(origin)?;
 
@@ -488,13 +509,13 @@ pub mod module {
 		/// - `fast_match_fee_rate`: the fixed fee rate when redeem request is been fast matched.
 		#[pallet::call_index(4)]
 		#[pallet::weight(< T as Config >::WeightInfo::update_homa_params())]
-		#[transactional]
 		pub fn update_homa_params(
 			origin: OriginFor<T>,
 			soft_bonded_cap_per_sub_account: Option<Balance>,
 			estimated_reward_rate_per_era: Option<Rate>,
 			commission_rate: Option<Rate>,
 			fast_match_fee_rate: Option<Rate>,
+			nominate_interval_era: Option<EraIndex>,
 		) -> DispatchResult {
 			T::GovernanceOrigin::ensure_origin(origin)?;
 
@@ -522,6 +543,10 @@ pub mod module {
 				})?;
 				Self::deposit_event(Event::<T>::FastMatchFeeRateUpdated { fast_match_fee_rate });
 			}
+			if let Some(interval) = nominate_interval_era {
+				NominateIntervalEra::<T>::set(interval);
+				Self::deposit_event(Event::<T>::NominateIntervalEraUpdated { eras: interval });
+			}
 
 			Ok(())
 		}
@@ -534,11 +559,10 @@ pub mod module {
 		/// - `frequency`: the frequency of block number on parachain.
 		#[pallet::call_index(5)]
 		#[pallet::weight(< T as Config >::WeightInfo::update_bump_era_params())]
-		#[transactional]
 		pub fn update_bump_era_params(
 			origin: OriginFor<T>,
-			last_era_bumped_block: Option<T::BlockNumber>,
-			frequency: Option<T::BlockNumber>,
+			last_era_bumped_block: Option<BlockNumberFor<T>>,
+			frequency: Option<BlockNumberFor<T>>,
 		) -> DispatchResult {
 			T::GovernanceOrigin::ensure_origin(origin)?;
 
@@ -580,7 +604,6 @@ pub mod module {
 		/// - `updates`: update list of subaccount.
 		#[pallet::call_index(6)]
 		#[pallet::weight(< T as Config >::WeightInfo::reset_ledgers(updates.len() as u32))]
-		#[transactional]
 		pub fn reset_ledgers(
 			origin: OriginFor<T>,
 			updates: Vec<(u16, Option<Balance>, Option<Vec<UnlockChunk>>)>,
@@ -624,7 +647,6 @@ pub mod module {
 		/// - `era_index`: the latest era index of relaychain.
 		#[pallet::call_index(7)]
 		#[pallet::weight(< T as Config >::WeightInfo::reset_current_era())]
-		#[transactional]
 		pub fn reset_current_era(origin: OriginFor<T>, era_index: EraIndex) -> DispatchResult {
 			T::GovernanceOrigin::ensure_origin(origin)?;
 
@@ -641,10 +663,12 @@ pub mod module {
 		}
 
 		#[pallet::call_index(8)]
-		#[pallet::weight(< T as Config >::WeightInfo::on_initialize_with_bump_era())]
-		pub fn force_bump_current_era(origin: OriginFor<T>, bump_amount: EraIndex) -> DispatchResult {
+		#[pallet::weight(< T as Config >::WeightInfo::on_initialize_with_bump_era(T::ProcessRedeemRequestsLimit::get()))]
+		pub fn force_bump_current_era(origin: OriginFor<T>, bump_amount: EraIndex) -> DispatchResultWithPostInfo {
 			T::GovernanceOrigin::ensure_origin(origin)?;
-			Self::bump_current_era(bump_amount)
+
+			let res = Self::bump_current_era(bump_amount);
+			Ok(Some(T::WeightInfo::on_initialize_with_bump_era(res.unwrap_or_default())).into())
 		}
 
 		/// Execute fast match for specific redeem requests, require completely matched.
@@ -653,7 +677,6 @@ pub mod module {
 		/// - `redeemer_list`: The list of redeem requests to execute fast redeem.
 		#[pallet::call_index(9)]
 		#[pallet::weight(< T as Config >::WeightInfo::fast_match_redeems(redeemer_list.len() as u32))]
-		#[transactional]
 		pub fn fast_match_redeems_completely(origin: OriginFor<T>, redeemer_list: Vec<T::AccountId>) -> DispatchResult {
 			let _ = ensure_signed(origin)?;
 
@@ -981,6 +1004,11 @@ pub mod module {
 						Ok(())
 					})?;
 					total_withdrawn_staking = total_withdrawn_staking.saturating_add(expired_unlocking);
+
+					Self::deposit_event(Event::<T>::HomaWithdrawUnbonded {
+						sub_account_index,
+						amount: expired_unlocking,
+					});
 				}
 			}
 
@@ -1028,6 +1056,11 @@ pub mod module {
 							ledger.bonded = ledger.bonded.saturating_add(bond_amount);
 							Ok(())
 						})?;
+
+						Self::deposit_event(Event::<T>::HomaBondExtra {
+							sub_account_index,
+							amount: bond_amount,
+						});
 					}
 				}
 
@@ -1040,17 +1073,18 @@ pub mod module {
 
 		/// Process redeem requests and subaccounts do unbond on relaychain by XCM message.
 		#[transactional]
-		pub fn process_redeem_requests(new_era: EraIndex) -> DispatchResult {
+		pub fn process_redeem_requests(new_era: EraIndex) -> Result<u32, DispatchError> {
 			let era_index_to_expire = new_era + T::BondingDuration::get();
 			let total_bonded = TotalStakingBonded::<T>::get();
 			let mut total_redeem_amount: Balance = Zero::zero();
 			let mut remain_total_bonded = total_bonded;
+			let mut handled_requests: u32 = 0;
 
 			// iter RedeemRequests and insert to Unbondings if remain_total_bonded is enough.
 			for (redeemer, (redeem_amount, _)) in RedeemRequests::<T>::iter() {
 				let redemption_amount = Self::convert_liquid_to_staking(redeem_amount)?;
 
-				if remain_total_bonded >= redemption_amount {
+				if remain_total_bonded >= redemption_amount && handled_requests < T::ProcessRedeemRequestsLimit::get() {
 					total_redeem_amount = total_redeem_amount.saturating_add(redeem_amount);
 					remain_total_bonded = remain_total_bonded.saturating_sub(redemption_amount);
 					RedeemRequests::<T>::remove(&redeemer);
@@ -1063,6 +1097,8 @@ pub mod module {
 						liquid_amount: redeem_amount,
 						unbonding_staking_amount: redemption_amount,
 					});
+
+					handled_requests += 1;
 				} else {
 					break;
 				}
@@ -1090,14 +1126,43 @@ pub mod module {
 						});
 						Ok(())
 					})?;
+
+					Self::deposit_event(Event::<T>::HomaUnbond {
+						sub_account_index,
+						amount: unbond_amount,
+					});
 				}
 			}
 
 			// burn total_redeem_amount.
-			Self::burn_liquid_currency(&Self::account_id(), total_redeem_amount)
+			Self::burn_liquid_currency(&Self::account_id(), total_redeem_amount)?;
+
+			Ok(handled_requests)
 		}
 
-		pub fn era_amount_should_to_bump(relaychain_block_number: T::BlockNumber) -> EraIndex {
+		/// Process nominate validators for subaccounts on relaychain.
+		pub fn process_nominate(new_era: EraIndex) -> DispatchResult {
+			// check whether need to nominate
+			let nominate_interval_era = NominateIntervalEra::<T>::get();
+			if !nominate_interval_era.is_zero() && new_era % nominate_interval_era == 0 {
+				for (sub_account_index, nominations) in
+					T::NominationsProvider::nominees_in_groups(T::ActiveSubAccountsIndexList::get())
+				{
+					if !nominations.is_empty() {
+						T::XcmInterface::nominate_on_sub_account(sub_account_index, nominations.clone())?;
+
+						Self::deposit_event(Event::<T>::HomaNominate {
+							sub_account_index,
+							nominations,
+						});
+					}
+				}
+			}
+
+			Ok(())
+		}
+
+		pub fn era_amount_should_to_bump(relaychain_block_number: BlockNumberFor<T>) -> EraIndex {
 			relaychain_block_number
 				.checked_sub(&Self::last_era_bumped_block())
 				.and_then(|n| n.checked_div(&Self::bump_era_frequency()))
@@ -1109,7 +1174,7 @@ pub mod module {
 		/// The rebalance will send XCM messages to relaychain. Once the XCM message is sent,
 		/// the execution result cannot be obtained and cannot be rolled back. So the process
 		/// of rebalance is not atomic.
-		pub fn bump_current_era(amount: EraIndex) -> DispatchResult {
+		pub fn bump_current_era(amount: EraIndex) -> Result<u32, DispatchError> {
 			let previous_era = Self::relay_chain_current_era();
 			let new_era = previous_era.saturating_add(amount);
 			RelayChainCurrentEra::<T>::put(new_era);
@@ -1117,13 +1182,14 @@ pub mod module {
 			Self::deposit_event(Event::<T>::CurrentEraBumped { new_era_index: new_era });
 
 			// Rebalance:
-			let res = || -> DispatchResult {
+			let res = || -> Result<u32, DispatchError> {
 				TotalVoidLiquid::<T>::put(0);
 				Self::process_staking_rewards(new_era, previous_era)?;
 				Self::process_scheduled_unbond(new_era)?;
 				Self::process_to_bond_pool()?;
-				Self::process_redeem_requests(new_era)?;
-				Ok(())
+				let count = Self::process_redeem_requests(new_era)?;
+				Self::process_nominate(new_era)?;
+				Ok(count)
 			}();
 
 			log::debug!(
@@ -1151,11 +1217,17 @@ pub mod module {
 			T::Currency::deposit(T::StakingCurrencyId::get(), who, amount)
 		}
 	}
+}
 
-	impl<T: Config> ExchangeRateProvider for Pallet<T> {
-		fn get_exchange_rate() -> ExchangeRate {
-			Self::current_exchange_rate()
-		}
+impl<T: Config> ExchangeRateProvider for Pallet<T> {
+	fn get_exchange_rate() -> ExchangeRate {
+		Self::current_exchange_rate()
+	}
+}
+
+impl<T: Config> Get<EraIndex> for Pallet<T> {
+	fn get() -> EraIndex {
+		Self::relay_chain_current_era()
 	}
 }
 

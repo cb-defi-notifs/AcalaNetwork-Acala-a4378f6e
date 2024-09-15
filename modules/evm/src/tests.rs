@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -25,7 +25,8 @@ use crate::runner::{
 	stack::SubstrateStackState,
 	state::{StackExecutor, StackState, StackSubstateMetadata},
 };
-use frame_support::{assert_noop, assert_ok, dispatch::DispatchErrorWithPostInfo};
+use frame_support::{assert_noop, assert_ok};
+use insta::assert_debug_snapshot;
 use module_support::{mocks::MockAddressMapping, AddressMapping};
 use sp_core::{
 	bytes::{from_hex, to_hex},
@@ -35,59 +36,19 @@ use sp_runtime::{traits::BadOrigin, AccountId32};
 use std::str::FromStr;
 
 #[test]
-fn inc_nonce_if_needed() {
-	new_test_ext().execute_with(|| {
-		assert_eq!(EVM::account_basic(&alice()).nonce, U256::from(1));
-
-		let mut call_info = CallInfo {
-			exit_reason: ExitReason::Succeed(ExitSucceed::Returned),
-			value: vec![],
-			used_gas: Default::default(),
-			used_storage: 0,
-			logs: vec![],
-		};
-
-		// succeed call won't inc nonce
-		Pallet::<Runtime>::inc_nonce_if_needed(&alice(), &Ok(call_info.clone()));
-		assert_eq!(EVM::account_basic(&alice()).nonce, U256::from(1));
-
-		call_info.exit_reason = ExitReason::Revert(ExitRevert::Reverted);
-		// revert call will inc nonce
-		Pallet::<Runtime>::inc_nonce_if_needed(&alice(), &Ok(call_info.clone()));
-		assert_eq!(EVM::account_basic(&alice()).nonce, U256::from(2));
-
-		call_info.exit_reason = ExitReason::Fatal(ExitFatal::NotSupported);
-		// fatal call will inc nonce
-		Pallet::<Runtime>::inc_nonce_if_needed(&alice(), &Ok(call_info.clone()));
-		assert_eq!(EVM::account_basic(&alice()).nonce, U256::from(3));
-
-		call_info.exit_reason = ExitReason::Error(ExitError::OutOfGas);
-		// error call will inc nonce
-		Pallet::<Runtime>::inc_nonce_if_needed(&alice(), &Ok(call_info.clone()));
-		assert_eq!(EVM::account_basic(&alice()).nonce, U256::from(4));
-
-		// dispatch error will inc nonce
-		Pallet::<Runtime>::inc_nonce_if_needed::<H160>(&alice(), &Err(Error::<Runtime>::InvalidDecimals.into()));
-		assert_eq!(EVM::account_basic(&alice()).nonce, U256::from(5));
-	});
-}
-
-#[test]
 fn fail_call_return_ok_and_inc_nonce() {
 	new_test_ext().execute_with(|| {
-		let mut data = [0u8; 32];
-		data[0..4].copy_from_slice(b"evm:");
-		let signer: AccountId32 = AccountId32::from(data);
-		let alice = MockAddressMapping::get_or_create_evm_address(&signer);
-		let origin = RuntimeOrigin::signed(signer);
+		let alice = alice();
+		let account = MockAddressMapping::get_account_id(&alice);
+		let origin = RuntimeOrigin::signed(account);
 
-		// nonce 0
-		assert_eq!(EVM::account_basic(&alice).nonce, U256::zero());
+		// nonce starts with 1
+		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(1));
 
 		// out of gas
 		assert_ok!(EVM::call(origin.clone(), contract_a(), Vec::new(), 0, 100, 0, vec![]));
 		// nonce inc by 1
-		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(1));
+		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(2));
 
 		// success call
 		assert_ok!(EVM::call(
@@ -100,12 +61,40 @@ fn fail_call_return_ok_and_inc_nonce() {
 			vec![]
 		));
 		// nonce inc by 1
-		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(2));
+		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(3));
 
 		// invalid decimals
 		assert_ok!(EVM::call(origin, contract_b(), Vec::new(), 1111, 1000000, 0, vec![]));
 		// nonce inc by 1
-		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(3));
+		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(4));
+	});
+}
+
+#[test]
+fn inc_nonce_with_revert() {
+	// pragma solidity ^0.5.0;
+	//
+	// contract Foo {
+	//     constructor() public {
+	// 		require(false, "error message");
+	// 	}
+	// }
+	let contract = from_hex(
+		"0x6080604052348015600f57600080fd5b5060006083576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040180806020018281038252600d8152602001807f6572726f72206d6573736167650000000000000000000000000000000000000081525060200191505060405180910390fd5b603e8060906000396000f3fe6080604052600080fdfea265627a7a723158204741083d83bf4e3ee8099dd0b3471c81061237c2e8eccfcb513dfa4c04634b5b64736f6c63430005110032").unwrap();
+
+	new_test_ext().execute_with(|| {
+		let alice = alice();
+		let account = MockAddressMapping::get_account_id(&alice);
+		let origin = RuntimeOrigin::signed(account);
+
+		// alice starts with nonce 1
+		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(1));
+
+		// revert call
+		assert_ok!(EVM::create(origin.clone(), contract, 0, 1000000, 0, vec![]));
+
+		// nonce inc by 1
+		assert_eq!(EVM::account_basic(&alice).nonce, U256::from(2));
 	});
 }
 
@@ -127,13 +116,13 @@ fn should_calculate_contract_address() {
 			Ok(H160::from_str("d654cB21c05cb14895baae28159b1107e9DbD6E4").unwrap())
 		);
 
-		executor.state_mut().inc_nonce(addr);
+		assert_ok!(executor.state_mut().inc_nonce(addr));
 		assert_eq!(
 			executor.create_address(evm::CreateScheme::Legacy { caller: addr }),
 			Ok(H160::from_str("97784910F057B07bFE317b0552AE23eF34644Aed").unwrap())
 		);
 
-		executor.state_mut().inc_nonce(addr);
+		assert_ok!(executor.state_mut().inc_nonce(addr));
 		assert_eq!(
 			executor.create_address(evm::CreateScheme::Legacy { caller: addr }),
 			Ok(H160::from_str("82155a21E0Ccaee9D4239a582EB2fDAC1D9237c5").unwrap())
@@ -176,9 +165,6 @@ fn should_create_and_call_contract() {
 		assert_eq!(result.exit_reason, ExitReason::Succeed(ExitSucceed::Returned));
 
 		let contract_address = result.value;
-
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(contract_address);
 
 		assert_eq!(contract_address, H160::from_str("5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d").unwrap());
 
@@ -294,9 +280,6 @@ fn call_reverts_with_message() {
 
 		let contract_address = result.value;
 
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(contract_address);
-
 		// call method `foo`
 		let foo = from_hex("0xc2985578").unwrap();
 		let result = <Runtime as Config>::Runner::call(
@@ -361,9 +344,6 @@ fn should_publish_payable_contract() {
 		)
 		.unwrap();
 		let contract_address = result.value;
-
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(contract_address);
 
 		assert_eq!(result.exit_reason, ExitReason::Succeed(ExitSucceed::Returned));
 		assert_eq!(result.used_storage, 287);
@@ -463,9 +443,6 @@ fn should_transfer_from_contract() {
 		);
 
 		let contract_address = result.value;
-
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(contract_address);
 
 		// send via transfer
 		let mut via_transfer = from_hex("0x636e082b").unwrap();
@@ -644,9 +621,6 @@ fn contract_should_publish_contracts() {
 		assert_eq!(balance(alice()), alice_balance);
 		let factory_contract_address = result.value;
 
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(factory_contract_address);
-
 		assert_eq!(balance(factory_contract_address), 0);
 		assert_eq!(
 			reserved_balance(factory_contract_address),
@@ -726,9 +700,6 @@ fn contract_should_publish_contracts_without_payable() {
 		assert_eq!(balance(factory_contract_address), 0);
 		assert_eq!(reserved_balance(factory_contract_address), 4640);
 
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(factory_contract_address);
-
 		// Factory.createContract
 		let create_contract = from_hex("0x412a5a6d").unwrap();
 		let result = <Runtime as Config>::Runner::call(
@@ -789,7 +760,7 @@ fn publish_factory() {
 		)
 		.unwrap();
 		assert_eq!(result.exit_reason, ExitReason::Succeed(ExitSucceed::Returned));
-		assert_eq!(result.used_gas.as_u64(), 155_879u64);
+		assert_eq!(result.used_gas.as_u64(), 155925);
 		assert_eq!(result.used_storage, 461);
 		assert_eq!(
 			balance(alice()),
@@ -830,7 +801,7 @@ fn create_nft_contract_works() {
 			from: NetworkContractSource::get(),
 			contract: MIRRORED_TOKENS_ADDRESS_START | H160::from_low_u64_be(MIRRORED_NFT_ADDRESS_START),
 			logs: vec![],
-			used_gas: 93183,
+			used_gas: 93197,
 			used_storage: 284,
 		}));
 		assert_eq!(EVM::network_contract_index(), MIRRORED_NFT_ADDRESS_START + 1);
@@ -900,11 +871,9 @@ fn create_predeploy_contract_works() {
 			from: NetworkContractSource::get(),
 			contract: addr,
 			logs: vec![],
-			used_gas: 93183,
+			used_gas: 93197,
 			used_storage: 284,
 		}));
-
-		System::assert_last_event(RuntimeEvent::EVM(crate::Event::ContractPublished { contract: addr }));
 
 		assert_noop!(
 			EVM::create_predeploy_contract(
@@ -1032,6 +1001,9 @@ fn should_publish() {
 		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
 		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
 
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
+
 		// contract not created yet
 		assert_noop!(EVM::publish_contract(RuntimeOrigin::signed(alice_account_id.clone()), H160::default()), Error::<Runtime>::ContractNotFound);
 
@@ -1055,7 +1027,7 @@ fn should_publish() {
 		let contract_address = result.value;
 
 		assert_eq!(result.used_storage, 284);
-		let alice_balance = INITIAL_BALANCE - 284 * EVM::get_storage_deposit_per_byte();
+		let alice_balance = INITIAL_BALANCE - 284 * EVM::get_storage_deposit_per_byte() - DEVELOPER_DEPOSIT;
 
 		assert_eq!(balance(alice()), alice_balance);
 
@@ -1118,7 +1090,9 @@ fn should_publish() {
 		let code_size = Accounts::<Runtime>::get(contract_address).map_or(0, |account_info| -> u32 {
 			account_info.contract_info.map_or(0, |contract_info| CodeInfos::<Runtime>::get(contract_info.code_hash).map_or(0, |code_info| code_info.code_size))
 		});
-		assert_eq!(balance(alice()), INITIAL_BALANCE - PUBLICATION_FEE - ((NEW_CONTRACT_EXTRA_BYTES + code_size) as u128* EVM::get_storage_deposit_per_byte()));
+
+		let alice_balance = INITIAL_BALANCE - PUBLICATION_FEE - ((NEW_CONTRACT_EXTRA_BYTES + code_size) as u128* EVM::get_storage_deposit_per_byte()) - DEVELOPER_DEPOSIT;
+		assert_eq!(balance(alice()), alice_balance);
 		assert_eq!(Balances::free_balance(TreasuryAccount::get()), INITIAL_BALANCE + PUBLICATION_FEE);
 
 		// call method `multiply` will work
@@ -1155,6 +1129,10 @@ fn should_publish_free() {
 	new_test_ext().execute_with(|| {
 		// contract not created yet
 		assert_noop!(EVM::publish_free(RuntimeOrigin::signed(CouncilAccount::get()), H160::default()), Error::<Runtime>::ContractNotFound);
+
+		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
 
 		// create contract
 		let result = <Runtime as Config>::Runner::create(alice(), contract, 0, 21_000_000, 21_000_000, vec![], <Runtime as Config>::config()).unwrap();
@@ -1277,6 +1255,9 @@ fn should_set_code() {
 		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
 		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
 
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
+
 		// create contract
 		let result = <Runtime as Config>::Runner::create(
 			alice(),
@@ -1290,7 +1271,7 @@ fn should_set_code() {
 		.unwrap();
 		let contract_address = result.value;
 		assert_eq!(result.used_storage, 284);
-		let alice_balance = INITIAL_BALANCE - 284 * EVM::get_storage_deposit_per_byte();
+		let alice_balance = INITIAL_BALANCE - 284 * EVM::get_storage_deposit_per_byte() - DEVELOPER_DEPOSIT;
 
 		assert_eq!(balance(alice()), alice_balance);
 		assert_eq!(reserved_balance(contract_address), 2840);
@@ -1420,6 +1401,9 @@ fn should_selfdestruct_without_schedule_task() {
 		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
 		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
 
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
+
 		let amount = 1000u128;
 
 		let mut stored_value: Vec<u8> =
@@ -1440,7 +1424,7 @@ fn should_selfdestruct_without_schedule_task() {
 
 		let contract_address = result.value;
 		assert_eq!(result.used_storage, 287);
-		let alice_balance = INITIAL_BALANCE - 287 * EVM::get_storage_deposit_per_byte() - amount;
+		let alice_balance = INITIAL_BALANCE - 287 * EVM::get_storage_deposit_per_byte() - amount - DEVELOPER_DEPOSIT;
 
 		assert_eq!(balance(alice()), alice_balance);
 
@@ -1520,6 +1504,9 @@ fn should_selfdestruct_with_schedule_task() {
 		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
 		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
 
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
+
 		let amount = 1000u128;
 
 		// create contract
@@ -1536,7 +1523,7 @@ fn should_selfdestruct_with_schedule_task() {
 
 		let contract_address = result.value;
 		assert_eq!(result.used_storage, 361);
-		let alice_balance = INITIAL_BALANCE - 361 * EVM::get_storage_deposit_per_byte() - amount;
+		let alice_balance = INITIAL_BALANCE - 361 * EVM::get_storage_deposit_per_byte() - amount - DEVELOPER_DEPOSIT;
 
 		assert_eq!(balance(alice()), alice_balance);
 
@@ -1692,9 +1679,6 @@ fn storage_limit_should_work() {
 		assert_eq!(balance(alice()), alice_balance);
 
 		let factory_contract_address = result.value;
-
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(factory_contract_address);
 
 		assert_eq!(balance(factory_contract_address), 0);
 		assert_eq!(
@@ -1859,9 +1843,6 @@ fn evm_execute_mode_should_work() {
 		assert_eq!(balance(alice()), alice_balance);
 		let factory_contract_address = result.value;
 
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(factory_contract_address);
-
 		let context = InvokeContext {
 			contract: factory_contract_address,
 			sender: alice(),
@@ -1889,7 +1870,7 @@ fn evm_execute_mode_should_work() {
 			CallInfo {
 				exit_reason: ExitReason::Succeed(ExitSucceed::Stopped),
 				value: vec![],
-				used_gas: U256::from(142_445),
+				used_gas: U256::from(142451),
 				used_storage: expected_used_storage,
 				logs: vec![]
 			}
@@ -1916,7 +1897,7 @@ fn evm_execute_mode_should_work() {
 			CallInfo {
 				exit_reason: ExitReason::Succeed(ExitSucceed::Stopped),
 				value: vec![],
-				used_gas: U256::from(259_561),
+				used_gas: U256::from(259573),
 				used_storage: expected_used_storage,
 				logs: vec![]
 			}
@@ -1976,7 +1957,7 @@ fn evm_execute_mode_should_work() {
 			CallInfo {
 				exit_reason: ExitReason::Succeed(ExitSucceed::Stopped),
 				value: vec![],
-				used_gas: U256::from(110_469),
+				used_gas: U256::from(110475),
 				used_storage: expected_used_storage,
 				logs: vec![]
 			}
@@ -2019,7 +2000,7 @@ fn evm_execute_mode_should_work() {
 			CallInfo {
 				exit_reason: ExitReason::Succeed(ExitSucceed::Stopped),
 				value: vec![],
-				used_gas: U256::from(93_369),
+				used_gas: U256::from(93375),
 				used_storage: expected_used_storage,
 				logs: vec![]
 			}
@@ -2071,9 +2052,6 @@ fn should_update_storage() {
 		assert_eq!(result.used_storage, used_storage as i32);
 
 		assert_eq!(ContractStorageSizes::<Runtime>::get(&contract_address), used_storage);
-
-		#[cfg(not(feature = "with-ethereum-compatibility"))]
-		publish_free(contract_address);
 
 		// call method `set(123)`
 		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
@@ -2291,6 +2269,10 @@ fn auto_publish_works() {
 
 	new_test_ext().execute_with(|| {
 		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
+
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
+
 		assert_ok!(EVM::create(
 			RuntimeOrigin::signed(alice_account_id.clone()),
 			code,
@@ -2305,8 +2287,8 @@ fn auto_publish_works() {
 			from: alice(),
 			contract: factory,
 			logs: vec![],
-			used_gas: 593209,
-			used_storage: 2609,
+			used_gas: 596931,
+			used_storage: 2620,
 		}));
 
 		// call method `createContract()`
@@ -2340,14 +2322,14 @@ fn auto_publish_works() {
 					data: vec![],
 				},
 			],
-			used_gas: 387664,
-			used_storage: 1530,
+			used_gas: 389159,
+			used_storage: 1537,
 		}));
 
 		assert_eq!(
 			EVM::accounts(factory).unwrap().contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0xd007bd109daec7dec73d897c079b67b3d2fd6ad4892a916c5e03e21bb60ff384")
+				code_hash: H256::from_str("0xa117e3bd6b1612af03f5876415d209b189ae474262958b00a2811c963d1ad717")
 					.unwrap(),
 				maintainer: alice(),
 				published: false
@@ -2358,7 +2340,7 @@ fn auto_publish_works() {
 				.unwrap()
 				.contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0xe12fa7753d9cd8de1f8b597fef33ab91c2749fe4a1022b648f949ab2566f391f")
+				code_hash: H256::from_str("0x0d9c1791bf0e7a5c3fc114885f45142815122dd7231aad0aeab4ab2c0b746c69")
 					.unwrap(),
 				maintainer: factory,
 				published: false
@@ -2369,7 +2351,7 @@ fn auto_publish_works() {
 				.unwrap()
 				.contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0x46460b564756d0e02bbfdc8fc3d47d1a68c3b3d8301b5de90da83d6d75e0b6c7")
+				code_hash: H256::from_str("0x1d07e7e9217fc910f5bbd51c260bbb2fb3564181dfbb3054e853bda4e50418d2")
 					.unwrap(),
 				maintainer: H160::from_str("0x7b8f8ca099f6e33cf1817cf67d0556429cfc54e4").unwrap(),
 				published: false
@@ -2410,14 +2392,14 @@ fn auto_publish_works() {
 					data: vec![],
 				},
 			],
-			used_gas: 370564,
-			used_storage: 1466,
+			used_gas: 372059,
+			used_storage: 1473,
 		}));
 
 		assert_eq!(
 			EVM::accounts(factory).unwrap().contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0xd007bd109daec7dec73d897c079b67b3d2fd6ad4892a916c5e03e21bb60ff384")
+				code_hash: H256::from_str("0xa117e3bd6b1612af03f5876415d209b189ae474262958b00a2811c963d1ad717")
 					.unwrap(),
 				maintainer: alice(),
 				published: true
@@ -2428,7 +2410,7 @@ fn auto_publish_works() {
 				.unwrap()
 				.contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0xe12fa7753d9cd8de1f8b597fef33ab91c2749fe4a1022b648f949ab2566f391f")
+				code_hash: H256::from_str("0x0d9c1791bf0e7a5c3fc114885f45142815122dd7231aad0aeab4ab2c0b746c69")
 					.unwrap(),
 				maintainer: H160::from_str("0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d").unwrap(),
 				published: true
@@ -2439,7 +2421,7 @@ fn auto_publish_works() {
 				.unwrap()
 				.contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0x46460b564756d0e02bbfdc8fc3d47d1a68c3b3d8301b5de90da83d6d75e0b6c7")
+				code_hash: H256::from_str("0x1d07e7e9217fc910f5bbd51c260bbb2fb3564181dfbb3054e853bda4e50418d2")
 					.unwrap(),
 				maintainer: H160::from_str("0x39b26a36a8a175ce7d498b5ef187d1ab2f381bbd").unwrap(),
 				published: true
@@ -2467,8 +2449,8 @@ fn auto_publish_works() {
 				],
 				data: vec![],
 			}],
-			used_gas: 147214,
-			used_storage: 407,
+			used_gas: 145811,
+			used_storage: 400,
 		}));
 
 		assert_eq!(
@@ -2476,7 +2458,7 @@ fn auto_publish_works() {
 				.unwrap()
 				.contract_info,
 			Some(ContractInfo {
-				code_hash: H256::from_str("0x46460b564756d0e02bbfdc8fc3d47d1a68c3b3d8301b5de90da83d6d75e0b6c7")
+				code_hash: H256::from_str("0x1d07e7e9217fc910f5bbd51c260bbb2fb3564181dfbb3054e853bda4e50418d2")
 					.unwrap(),
 				maintainer: H160::from_str("0x7b8f8ca099f6e33cf1817cf67d0556429cfc54e4").unwrap(),
 				published: true
@@ -2534,6 +2516,12 @@ fn strict_call_works() {
 	).unwrap();
 
 	new_test_ext().execute_with(|| {
+		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
+		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
+
+		// so contracts are unpublished
+		assert_ok!(EVM::enable_account_contract_development(&alice_account_id));
+
 		// create contract
 		let result = <Runtime as Config>::Runner::create(
 			alice(),
@@ -2548,83 +2536,122 @@ fn strict_call_works() {
 
 		let contract_address = result.value;
 
-		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
-		let bob_account_id = <Runtime as Config>::AddressMapping::get_account_id(&bob());
-
-		assert_eq!(
-			Utility::batch_all(
-				RuntimeOrigin::signed(bob_account_id.clone()),
-				vec![
-					RuntimeCall::Balances(pallet_balances::Call::transfer {
-						dest: bob_account_id.clone(),
-						value: 5
-					}),
-					RuntimeCall::Balances(pallet_balances::Call::transfer {
-						dest: bob_account_id.clone(),
-						value: 6
-					}),
-					// call method `set(123)`
-					RuntimeCall::EVM(evm_mod::Call::strict_call {
-						target: contract_address,
-						input: from_hex("0x60fe47b1000000000000000000000000000000000000000000000000000000000000007b")
-							.unwrap(),
-						value: 0,
-						gas_limit: 1000000,
-						storage_limit: 0,
-						access_list: vec![],
-					})
-				]
-			),
-			Err(DispatchErrorWithPostInfo {
-				post_info: PostDispatchInfo {
-					actual_weight: Some(Weight::from_parts(1468769052, 7186)),
-					pays_fee: Pays::Yes
-				},
-				error: Error::<Runtime>::NoPermission.into(),
-			})
+		let res1 = Utility::batch_all(
+			RuntimeOrigin::signed(bob_account_id.clone()),
+			vec![
+				RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death {
+					dest: bob_account_id.clone(),
+					value: 5,
+				}),
+				RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death {
+					dest: bob_account_id.clone(),
+					value: 6,
+				}),
+				// call method `set(123)`
+				RuntimeCall::EVM(evm_mod::Call::strict_call {
+					target: contract_address,
+					input: from_hex("0x60fe47b1000000000000000000000000000000000000000000000000000000000000007b")
+						.unwrap(),
+					value: 0,
+					gas_limit: 1000000,
+					storage_limit: 0,
+					access_list: vec![],
+				}),
+			],
 		);
 
-		assert_eq!(
-			Utility::batch_all(
-				RuntimeOrigin::signed(alice_account_id.clone()),
-				vec![
-					RuntimeCall::Balances(pallet_balances::Call::transfer {
-						dest: bob_account_id.clone(),
-						value: 5
-					}),
-					RuntimeCall::Balances(pallet_balances::Call::transfer {
-						dest: bob_account_id.clone(),
-						value: 6
-					}),
-					// call undefined method
-					RuntimeCall::EVM(evm_mod::Call::strict_call {
-						target: contract_address,
-						input: from_hex("0x00000000000000000000000000000000000000000000000000000000000000000000007b")
-							.unwrap(),
-						value: 0,
-						gas_limit: 1000000,
-						storage_limit: 0,
-						access_list: vec![],
-					})
-				]
-			),
-			Err(DispatchErrorWithPostInfo {
-				post_info: PostDispatchInfo {
-					actual_weight: Some(Weight::from_parts(1467812754, 7186)),
-					pays_fee: Pays::Yes
-				},
-				error: Error::<Runtime>::StrictCallFailed.into(),
-			})
+		assert_debug_snapshot!(res1, @r###"
+  Err(
+      DispatchErrorWithPostInfo {
+          post_info: PostDispatchInfo {
+              actual_weight: Some(
+                  Weight {
+                      ref_time: 1491004635,
+                      proof_size: 11183,
+                  },
+              ),
+              pays_fee: Pays::Yes,
+          },
+          error: Module(
+              ModuleError {
+                  index: 2,
+                  error: [
+                      2,
+                      0,
+                      0,
+                      0,
+                  ],
+                  message: Some(
+                      "NoPermission",
+                  ),
+              },
+          ),
+      },
+  )
+  "###);
+
+		let res2 = Utility::batch_all(
+			RuntimeOrigin::signed(alice_account_id.clone()),
+			vec![
+				RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death {
+					dest: bob_account_id.clone(),
+					value: 5,
+				}),
+				RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death {
+					dest: bob_account_id.clone(),
+					value: 6,
+				}),
+				// call undefined method
+				RuntimeCall::EVM(evm_mod::Call::strict_call {
+					target: contract_address,
+					input: from_hex("0x00000000000000000000000000000000000000000000000000000000000000000000007b")
+						.unwrap(),
+					value: 0,
+					gas_limit: 1000000,
+					storage_limit: 0,
+					access_list: vec![],
+				}),
+			],
 		);
+
+		assert_debug_snapshot!(res2, @r###"
+  Err(
+      DispatchErrorWithPostInfo {
+          post_info: PostDispatchInfo {
+              actual_weight: Some(
+                  Weight {
+                      ref_time: 1490048337,
+                      proof_size: 11183,
+                  },
+              ),
+              pays_fee: Pays::Yes,
+          },
+          error: Module(
+              ModuleError {
+                  index: 2,
+                  error: [
+                      15,
+                      0,
+                      0,
+                      0,
+                  ],
+                  message: Some(
+                      "StrictCallFailed",
+                  ),
+              },
+          ),
+      },
+  )
+  "###);
 
 		assert_ok!(Utility::batch_all(
 			RuntimeOrigin::signed(alice_account_id.clone()),
 			vec![
-				RuntimeCall::Balances(pallet_balances::Call::transfer {
+				RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death {
 					dest: bob_account_id.clone(),
 					value: 5
 				}),
-				RuntimeCall::Balances(pallet_balances::Call::transfer {
+				RuntimeCall::Balances(pallet_balances::Call::transfer_allow_death {
 					dest: bob_account_id.clone(),
 					value: 6
 				}),
@@ -2827,5 +2854,400 @@ fn aggregated_storage_logs_works() {
 			amount,
 			destination_status: BalanceStatus::Reserved,
 		}));
+	})
+}
+
+#[allow(deprecated)]
+#[test]
+fn should_not_allow_contracts_send_tx() {
+	new_test_ext().execute_with(|| {
+		let origin = RuntimeOrigin::signed(MockAddressMapping::get_account_id(&contract_a()));
+		assert_noop!(
+			EVM::eth_call(
+				origin.clone(),
+				TransactionAction::Call(contract_a()),
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![],
+				0
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::eth_call(
+				origin.clone(),
+				TransactionAction::Create,
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![],
+				0
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::eth_call_v2(
+				origin.clone(),
+				TransactionAction::Call(contract_a()),
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![]
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::eth_call_v2(
+				origin.clone(),
+				TransactionAction::Create,
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![]
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::call(origin.clone(), contract_a(), vec![], 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::create(origin.clone(), vec![], 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::create2(origin.clone(), vec![], Default::default(), 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::strict_call(origin, contract_a(), vec![], 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+	});
+}
+
+#[allow(deprecated)]
+#[test]
+fn should_not_allow_system_contracts_send_tx() {
+	new_test_ext().execute_with(|| {
+		let origin = RuntimeOrigin::signed(MockAddressMapping::get_account_id(
+			&H160::from_str("000000000000000000ffffffffffffffffffffff").unwrap(),
+		));
+		assert_noop!(
+			EVM::eth_call(
+				origin.clone(),
+				TransactionAction::Call(contract_a()),
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![],
+				0
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::eth_call(
+				origin.clone(),
+				TransactionAction::Create,
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![],
+				0
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::eth_call_v2(
+				origin.clone(),
+				TransactionAction::Call(contract_a()),
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![]
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::eth_call_v2(
+				origin.clone(),
+				TransactionAction::Create,
+				vec![],
+				0,
+				1_000_000,
+				100,
+				vec![]
+			),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::call(origin.clone(), contract_a(), vec![], 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::create(origin.clone(), vec![], 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::create2(origin.clone(), vec![], Default::default(), 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+		assert_noop!(
+			EVM::strict_call(origin, contract_a(), vec![], 0, 1_000_000, 100, vec![]),
+			Error::<Runtime>::NotEOA
+		);
+	});
+}
+
+#[cfg(feature = "tracing")]
+#[test]
+fn tracer_works() {
+	// pragma solidity =0.8.9;
+	//
+	// contract StorageManager {
+	//     Storage public s;
+	//
+	//     constructor() {
+	//         s = new Storage();
+	//     }
+	//
+	//     function loop_insert_and_remove(uint insert, uint remove) public {
+	//         loop_insert(insert);
+	//         loop_remove(remove);
+	//     }
+	//
+	//     function loop_insert(uint max) public {
+	//         for (uint i = 0; i < max; i++) {
+	//             s.insert(i, 1);
+	//         }
+	//     }
+	//
+	//     function loop_remove(uint max) public {
+	//         for (uint i = 0; i < max; i++) {
+	//             s.insert(i, 0);
+	//         }
+	//     }
+	// }
+	//
+	// contract Storage {
+	//     mapping(uint=>uint) table;
+	//
+	//     function insert(uint index, uint value) public {
+	//         if (value != 0) {
+	//             table[index] = value;
+	//         } else {
+	//             delete table[index];
+	//         }
+	//     }
+	// }
+	let contract = from_hex(
+		"0x608060405234801561001057600080fd5b5060405161001d9061007e565b604051809103906000f080158015610039573d6000803e3d6000fd5b506000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555061008b565b610147806105be83390190565b6105248061009a6000396000f3fe608060405234801561001057600080fd5b506004361061004c5760003560e01c80630be6fe5d146100515780631358f5251461006d57806386b714e214610089578063da1385d5146100a7575b600080fd5b61006b60048036038101906100669190610298565b6100c3565b005b610087600480360381019061008291906102d8565b6100d9565b005b610091610189565b60405161009e9190610384565b60405180910390f35b6100c160048036038101906100bc91906102d8565b6101ad565b005b6100cc826101ad565b6100d5816100d9565b5050565b60005b818110156101855760008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16631d834a1b8260006040518363ffffffff1660e01b81526004016101409291906103e9565b600060405180830381600087803b15801561015a57600080fd5b505af115801561016e573d6000803e3d6000fd5b50505050808061017d90610441565b9150506100dc565b5050565b60008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1681565b60005b818110156102595760008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16631d834a1b8260016040518363ffffffff1660e01b81526004016102149291906104c5565b600060405180830381600087803b15801561022e57600080fd5b505af1158015610242573d6000803e3d6000fd5b50505050808061025190610441565b9150506101b0565b5050565b600080fd5b6000819050919050565b61027581610262565b811461028057600080fd5b50565b6000813590506102928161026c565b92915050565b600080604083850312156102af576102ae61025d565b5b60006102bd85828601610283565b92505060206102ce85828601610283565b9150509250929050565b6000602082840312156102ee576102ed61025d565b5b60006102fc84828501610283565b91505092915050565b600073ffffffffffffffffffffffffffffffffffffffff82169050919050565b6000819050919050565b600061034a61034561034084610305565b610325565b610305565b9050919050565b600061035c8261032f565b9050919050565b600061036e82610351565b9050919050565b61037e81610363565b82525050565b60006020820190506103996000830184610375565b92915050565b6103a881610262565b82525050565b6000819050919050565b60006103d36103ce6103c9846103ae565b610325565b610262565b9050919050565b6103e3816103b8565b82525050565b60006040820190506103fe600083018561039f565b61040b60208301846103da565b9392505050565b7f4e487b7100000000000000000000000000000000000000000000000000000000600052601160045260246000fd5b600061044c82610262565b91507fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff82141561047f5761047e610412565b5b600182019050919050565b6000819050919050565b60006104af6104aa6104a58461048a565b610325565b610262565b9050919050565b6104bf81610494565b82525050565b60006040820190506104da600083018561039f565b6104e760208301846104b6565b939250505056fea2646970667358221220c53549ea0c54d760bc0fd8aa7f8eeebf806e4474546e87e9783e4ad3f55dfa6564736f6c63430008090033608060405234801561001057600080fd5b50610127806100206000396000f3fe6080604052348015600f57600080fd5b506004361060285760003560e01c80631d834a1b14602d575b600080fd5b60436004803603810190603f919060b8565b6045565b005b600081146067578060008084815260200190815260200160002081905550607e565b600080838152602001908152602001600020600090555b5050565b600080fd5b6000819050919050565b6098816087565b811460a257600080fd5b50565b60008135905060b2816091565b92915050565b6000806040838503121560cc5760cb6082565b5b600060d88582860160a5565b925050602060e78582860160a5565b915050925092905056fea2646970667358221220941edb58b322ea8088f4f9091a8a48c92e59c2f39db303d8e126a0c3dd434dde64736f6c63430008090033"
+	).unwrap();
+
+	use primitives::evm::tracing::{OpcodeConfig, TraceOutcome, TracerConfig};
+
+	new_test_ext().execute_with(|| {
+		let mut tracer = crate::runner::tracing::Tracer::new(TracerConfig::CallTracer);
+		let result = crate::runner::tracing::using(&mut tracer, || {
+			// create contract
+			<Runtime as Config>::Runner::create(
+				alice(),
+				contract,
+				0,
+				500000,
+				100000,
+				vec![],
+				<Runtime as Config>::config(),
+			).unwrap()
+		});
+		let expected = r#"
+        [
+		  {
+			"type": "CREATE",
+			"from": "0x1000000000000000000000000000000000000001",
+			"to": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+			"input": "0x608060405234801561001057600080fd5b5060405161001d9061007e565b604051809103906000f080158015610039573d6000803e3d6000fd5b506000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555061008b565b610147806105be83390190565b6105248061009a6000396000f3fe608060405234801561001057600080fd5b506004361061004c5760003560e01c80630be6fe5d146100515780631358f5251461006d57806386b714e214610089578063da1385d5146100a7575b600080fd5b61006b60048036038101906100669190610298565b6100c3565b005b610087600480360381019061008291906102d8565b6100d9565b005b610091610189565b60405161009e9190610384565b60405180910390f35b6100c160048036038101906100bc91906102d8565b6101ad565b005b6100cc826101ad565b6100d5816100d9565b5050565b60005b818110156101855760008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16631d834a1b8260006040518363ffffffff1660e01b81526004016101409291906103e9565b600060405180830381600087803b15801561015a57600080fd5b505af115801561016e573d6000803e3d6000fd5b50505050808061017d90610441565b9150506100dc565b5050565b60008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1681565b60005b818110156102595760008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16631d834a1b8260016040518363ffffffff1660e01b81526004016102149291906104c5565b600060405180830381600087803b15801561022e57600080fd5b505af1158015610242573d6000803e3d6000fd5b50505050808061025190610441565b9150506101b0565b5050565b600080fd5b6000819050919050565b61027581610262565b811461028057600080fd5b50565b6000813590506102928161026c565b92915050565b600080604083850312156102af576102ae61025d565b5b60006102bd85828601610283565b92505060206102ce85828601610283565b9150509250929050565b6000602082840312156102ee576102ed61025d565b5b60006102fc84828501610283565b91505092915050565b600073ffffffffffffffffffffffffffffffffffffffff82169050919050565b6000819050919050565b600061034a61034561034084610305565b610325565b610305565b9050919050565b600061035c8261032f565b9050919050565b600061036e82610351565b9050919050565b61037e81610363565b82525050565b60006020820190506103996000830184610375565b92915050565b6103a881610262565b82525050565b6000819050919050565b60006103d36103ce6103c9846103ae565b610325565b610262565b9050919050565b6103e3816103b8565b82525050565b60006040820190506103fe600083018561039f565b61040b60208301846103da565b9392505050565b7f4e487b7100000000000000000000000000000000000000000000000000000000600052601160045260246000fd5b600061044c82610262565b91507fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff82141561047f5761047e610412565b5b600182019050919050565b6000819050919050565b60006104af6104aa6104a58461048a565b610325565b610262565b9050919050565b6104bf81610494565b82525050565b60006040820190506104da600083018561039f565b6104e760208301846104b6565b939250505056fea2646970667358221220c53549ea0c54d760bc0fd8aa7f8eeebf806e4474546e87e9783e4ad3f55dfa6564736f6c63430008090033608060405234801561001057600080fd5b50610127806100206000396000f3fe6080604052348015600f57600080fd5b506004361060285760003560e01c80631d834a1b14602d575b600080fd5b60436004803603810190603f919060b8565b6045565b005b600081146067578060008084815260200190815260200160002081905550607e565b600080838152602001908152602001600020600090555b5050565b600080fd5b6000819050919050565b6098816087565b811460a257600080fd5b50565b60008135905060b2816091565b92915050565b6000806040838503121560cc5760cb6082565b5b600060d88582860160a5565b925050602060e78582860160a5565b915050925092905056fea2646970667358221220941edb58b322ea8088f4f9091a8a48c92e59c2f39db303d8e126a0c3dd434dde64736f6c63430008090033",
+			"value": "0x0",
+			"gas": 500000,
+			"gasUsed": 457161,
+			"output": null,
+			"error": null,
+			"revertReason": null,
+			"depth": 0,
+			"logs": [
+			  {
+			    "sLoad": {
+			      "address": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+			      "index": "0x0000000000000000000000000000000000000000000000000000000000000000",
+			      "value": "0x0000000000000000000000000000000000000000000000000000000000000000"
+			    }
+			  },
+			  {
+			    "sStore": {
+			      "address": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+			      "index": "0x0000000000000000000000000000000000000000000000000000000000000000",
+			      "value": "0x0000000000000000000000007b8f8ca099f6e33cf1817cf67d0556429cfc54e4"
+			    }
+			  }
+			],
+			"calls": [
+			  {
+				"type": "CREATE",
+				"from": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+				"to": "0x7b8f8ca099f6e33cf1817cf67d0556429cfc54e4",
+				"input": "0x608060405234801561001057600080fd5b50610127806100206000396000f3fe6080604052348015600f57600080fd5b506004361060285760003560e01c80631d834a1b14602d575b600080fd5b60436004803603810190603f919060b8565b6045565b005b600081146067578060008084815260200190815260200160002081905550607e565b600080838152602001908152602001600020600090555b5050565b600080fd5b6000819050919050565b6098816087565b811460a257600080fd5b50565b60008135905060b2816091565b92915050565b6000806040838503121560cc5760cb6082565b5b600060d88582860160a5565b925050602060e78582860160a5565b915050925092905056fea2646970667358221220941edb58b322ea8088f4f9091a8a48c92e59c2f39db303d8e126a0c3dd434dde64736f6c63430008090033",
+				"value": "0x0",
+				"gas": 419604,
+				"gasUsed": 91133,
+				"output": null,
+				"error": null,
+				"revertReason": null,
+				"depth": 1,
+				"logs": [],
+				"calls": []
+			  }
+			]
+		  }
+		]
+        "#;
+		let expected = serde_json::from_str::<Vec<crate::runner::tracing::CallTrace>>(expected).unwrap();
+		assert_eq!(tracer.finalize(), TraceOutcome::Calls(expected));
+
+		let contract_address = result.value;
+
+		let alice_account_id = <Runtime as Config>::AddressMapping::get_account_id(&alice());
+
+		let mut tracer = crate::runner::tracing::Tracer::new(TracerConfig::CallTracer);
+		crate::runner::tracing::using(&mut tracer, || {
+			assert_ok!(EVM::call(
+				RuntimeOrigin::signed(alice_account_id.clone()),
+				contract_address,
+				hex! {"
+					da1385d5
+					0000000000000000000000000000000000000000000000000000000000000001
+				"}
+				.to_vec(),
+				0,
+				1000000,
+				0,
+				vec![],
+			));
+		});
+
+		let expected = r#"
+        [
+		  {
+			"type": "CALL",
+			"from": "0x1000000000000000000000000000000000000001",
+			"to": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+			"input": "0xda1385d50000000000000000000000000000000000000000000000000000000000000001",
+			"value": "0x0",
+			"gas": 1000000,
+			"gasUsed": 50007,
+			"output": null,
+			"error": null,
+			"revertReason": null,
+			"depth": 0,
+			"logs": [
+			  {
+			    "sLoad": {
+			      "address": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+			      "index": "0x0000000000000000000000000000000000000000000000000000000000000000",
+			      "value": "0x0000000000000000000000007b8f8ca099f6e33cf1817cf67d0556429cfc54e4"
+			    }
+			  }
+			],
+			"calls": [
+			  {
+				"type": "CALL",
+				"from": "0x5f8bd49cd9f0cb2bd5bb9d4320dfe9b61023249d",
+				"to": "0x7b8f8ca099f6e33cf1817cf67d0556429cfc54e4",
+				"input": "0x1d834a1b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+				"value": "0x0",
+				"gas": 973100,
+				"gasUsed": 22883,
+				"output": null,
+				"error": null,
+				"revertReason": null,
+				"depth": 1,
+				"logs": [
+				  {
+				    "sStore": {
+				      "address": "0x7b8f8ca099f6e33cf1817cf67d0556429cfc54e4",
+				      "index": "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
+				      "value": "0x0000000000000000000000000000000000000000000000000000000000000001"
+				    }
+				  }
+				],
+				"calls": []
+			  }
+			]
+		  }
+		]
+        "#;
+		let expected = serde_json::from_str::<Vec<crate::runner::tracing::CallTrace>>(expected).unwrap();
+		assert_eq!(tracer.finalize(), TraceOutcome::Calls(expected));
+
+		let mut tracer = crate::runner::tracing::Tracer::new(TracerConfig::OpcodeTracer(OpcodeConfig {
+			page: 0,
+			page_size: 1_000,
+			disable_stack: false,
+			enable_memory: true,
+		}));
+		crate::runner::tracing::using(&mut tracer, || {
+			assert_ok!(EVM::call(
+				RuntimeOrigin::signed(alice_account_id.clone()),
+				contract_address,
+				hex! {"
+					da1385d5
+					0000000000000000000000000000000000000000000000000000000000000001
+				"}
+				.to_vec(),
+				0,
+				1000000,
+				0,
+				vec![],
+			));
+		});
+
+		match tracer.finalize() {
+			TraceOutcome::Steps(steps) => {
+				assert_eq!(steps.len(), 553);
+				let step = r#"
+					{
+						"op": 96,
+						"pc": 0,
+						"depth": 0,
+						"gas": 978796,
+						"stack": [],
+						"memory": null
+					}
+				"#;
+						let step = serde_json::from_str::<crate::runner::tracing::Step>(step).unwrap();
+						assert_eq!(steps.first().unwrap(), &step);
+
+						let step = r#"
+					{
+						"op": 0,
+						"pc": 194,
+						"depth": 0,
+						"gas": 949993,
+						"stack": [[218, 19, 133, 213]],
+						"memory": [[0], [0], [128], [0], [29, 131, 74, 27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0], [0, 0, 0, 1]]
+					}
+				"#;
+				let step = serde_json::from_str::<crate::runner::tracing::Step>(step).unwrap();
+				assert_eq!(steps.last().unwrap(), &step);
+			}
+			_ => panic!("unexpected trace outcome"),
+		}
 	})
 }

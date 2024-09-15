@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use codec::{Decode, Encode};
+use parity_scale_codec::{Decode, Encode};
 use scale_info::TypeInfo;
 use sp_runtime::{
 	traits::{Lazy, Verify},
@@ -41,6 +41,8 @@ pub enum AcalaMultiSignature {
 	Eip1559([u8; 65]),
 	// An Ethereum SECP256k1 signature using Eip712 for message encoding.
 	AcalaEip712([u8; 65]),
+	// An Ethereum SECP256k1 signature using Eip2930 for message encoding.
+	Eip2930([u8; 65]),
 }
 
 impl From<ed25519::Signature> for AcalaMultiSignature {
@@ -96,7 +98,7 @@ impl TryFrom<AcalaMultiSignature> for ecdsa::Signature {
 
 impl Default for AcalaMultiSignature {
 	fn default() -> Self {
-		Self::Ed25519(ed25519::Signature([0u8; 64]))
+		Self::Ed25519([0u8; 64].into())
 	}
 }
 

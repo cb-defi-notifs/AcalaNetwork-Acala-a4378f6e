@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{AccountId, LiquidCrowdloan, LiquidCrowdloanCurrencyId, PolkadotXcm, Runtime, RuntimeOrigin, System};
+use crate::{
+	AccountId, GetLiquidCurrencyId, GetStakingCurrencyId, LiquidCrowdloan, LiquidCrowdloanCurrencyId, PolkadotXcm,
+	Runtime, RuntimeOrigin, System,
+};
 
 use super::utils::{set_balance, STAKING};
 use frame_benchmarking::whitelisted_caller;
@@ -34,16 +37,11 @@ runtime_benchmarks! {
 		set_balance(STAKING, &LiquidCrowdloan::account_id(), amount);
 	}: _(RawOrigin::Signed(caller), amount)
 	verify {
-		System::assert_last_event(module_liquid_crowdloan::Event::Redeemed { amount }.into());
+		System::assert_last_event(module_liquid_crowdloan::Event::Redeemed { currency_id: GetStakingCurrencyId::get(), amount }.into());
 	}
 
-	transfer_from_crowdloan_vault {
-		PolkadotXcm::force_default_xcm_version(RuntimeOrigin::root(), Some(2)).unwrap();
-		let amount = 1_000;
-	}: _(RawOrigin::Root, amount)
-	verify {
-		System::assert_last_event(module_liquid_crowdloan::Event::TransferFromCrowdloanVaultRequested { amount }.into());
-	}
+	set_redeem_currency_id {
+	}: _(RawOrigin::Root, GetLiquidCurrencyId::get())
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -24,11 +24,11 @@
 
 use frame_support::{pallet_prelude::*, transactional};
 use frame_system::pallet_prelude::*;
+use module_support::{AggregatedSwapPath, DEXManager, RebasedStableAssetError, Swap, SwapLimit};
 use nutsfinance_stable_asset::traits::StableAsset as StableAssetT;
 use primitives::{Balance, CurrencyId};
 use sp_runtime::traits::{Convert, Zero};
 use sp_std::{marker::PhantomData, vec::Vec};
-use support::{AggregatedSwapPath, DEXManager, RebasedStableAssetError, Swap, SwapLimit};
 
 mod mock;
 mod tests;
@@ -54,7 +54,7 @@ pub mod module {
 			AtLeast64BitUnsigned = Balance,
 			Balance = Balance,
 			AccountId = Self::AccountId,
-			BlockNumber = Self::BlockNumber,
+			BlockNumber = BlockNumberFor<Self>,
 		>;
 
 		/// Origin represented Governance
@@ -96,7 +96,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -112,7 +112,6 @@ pub mod module {
 				SwapPath::Taiga(_, _, _) => u + 1
 			})
 		))]
-		#[transactional]
 		pub fn swap_with_exact_supply(
 			origin: OriginFor<T>,
 			paths: Vec<SwapPath>,
@@ -133,7 +132,6 @@ pub mod module {
 				SwapPath::Taiga(_, _, _) => u + 1
 			})
 		))]
-		#[transactional]
 		pub fn swap_with_exact_target(
 			origin: OriginFor<T>,
 			paths: Vec<SwapPath>,
@@ -155,7 +153,6 @@ pub mod module {
 		/// - `updates`:  Vec<((TokenA, TokenB), Option<Vec<SwapPath>>)>
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::update_aggregated_swap_paths(updates.len() as u32))]
-		#[transactional]
 		pub fn update_aggregated_swap_paths(
 			origin: OriginFor<T>,
 			updates: Vec<((CurrencyId, CurrencyId), Option<Vec<SwapPath>>)>,

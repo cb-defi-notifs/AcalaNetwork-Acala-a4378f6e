@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -23,7 +23,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
 
-use frame_support::{pallet_prelude::*, transactional};
+use frame_support::pallet_prelude::*;
 use frame_system::pallet_prelude::*;
 
 use primitives::{currency::KUSD, evm::EvmAddress, Balance, CurrencyId};
@@ -92,7 +92,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn integrity_test() {
 			assert!(T::StableCoinCurrencyId::get() == KUSD);
 		}
@@ -106,7 +106,6 @@ pub mod module {
 		/// - `address`: The address of the Bridge's stable coin currency id.
 		#[pallet::call_index(0)]
 		#[pallet::weight(< T as Config >::WeightInfo::set_bridged_stable_coin_address())]
-		#[transactional]
 		pub fn set_bridged_stable_coin_address(origin: OriginFor<T>, address: EvmAddress) -> DispatchResult {
 			T::UpdateOrigin::ensure_origin(origin)?;
 
@@ -126,7 +125,6 @@ pub mod module {
 		/// - `amount`: The amount of stable coin to exchange.
 		#[pallet::call_index(1)]
 		#[pallet::weight(< T as Config >::WeightInfo::to_bridged())]
-		#[transactional]
 		pub fn to_bridged(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -150,7 +148,6 @@ pub mod module {
 		/// - `amount`: The amount of stable coin to exchange.
 		#[pallet::call_index(2)]
 		#[pallet::weight(< T as Config >::WeightInfo::from_bridged())]
-		#[transactional]
 		pub fn from_bridged(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 

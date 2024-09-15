@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,13 +16,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use codec::Codec;
-use frame_support::{
-	dispatch::{DispatchError, DispatchResult},
-	pallet_prelude::Member,
-	traits::Get,
-	Parameter, StorageMap,
-};
+use frame_support::{dispatch::DispatchResult, pallet_prelude::Member, traits::Get, Parameter, StorageMap};
+use parity_scale_codec::Codec;
+use sp_runtime::DispatchError;
 use sp_std::prelude::*;
 
 use super::error::Error;
@@ -52,7 +48,6 @@ where
 	type MaxUnbondingChunks: Get<u32>;
 	type Moment: Ord + Eq + Copy;
 	type AccountId: Parameter + Member;
-
 	type Ledger: StorageMap<Self::AccountId, BondingLedgerOf<Self>, Query = Option<BondingLedgerOf<Self>>>;
 
 	fn available_balance(who: &Self::AccountId, ledger: &BondingLedgerOf<Self>) -> Balance;

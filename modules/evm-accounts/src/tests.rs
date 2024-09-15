@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -47,6 +47,14 @@ fn claim_account_work() {
 #[test]
 fn claim_account_should_not_work() {
 	ExtBuilder::default().build().execute_with(|| {
+		assert_noop!(
+			EvmAccountsModule::claim_account(
+				RuntimeOrigin::signed(ALICE),
+				EvmAccountsModule::eth_address(&bob()),
+				[0u8; 65]
+			),
+			Error::<Runtime>::BadSignature
+		);
 		assert_noop!(
 			EvmAccountsModule::claim_account(
 				RuntimeOrigin::signed(ALICE),
@@ -118,6 +126,22 @@ fn evm_get_account_id() {
 			&evm_account
 		));
 		assert!(EvmAddressMapping::<Runtime>::is_linked(&ALICE, &evm_account));
+	});
+}
+
+#[test]
+fn validate_evm_account_id() {
+	ExtBuilder::default().build().execute_with(|| {
+		assert!(EvmAddressMapping::<Runtime>::get_evm_address(&ALICE).is_none());
+
+		let no_zero_padding = AccountId32::new(*b"evm:aaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+		assert!(EvmAddressMapping::<Runtime>::get_evm_address(&no_zero_padding).is_none());
+
+		let valid_account_id = AccountId32::new(*b"evm:aaaaaaaaaaaaaaaaaaaa\0\0\0\0\0\0\0\0");
+		assert_eq!(
+			EvmAddressMapping::<Runtime>::get_evm_address(&valid_account_id).unwrap(),
+			EvmAddress::from(b"aaaaaaaaaaaaaaaaaaaa")
+		);
 	});
 }
 

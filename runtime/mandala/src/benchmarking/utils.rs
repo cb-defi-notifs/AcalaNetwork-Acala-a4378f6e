@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -23,7 +23,6 @@ use crate::{
 	System, Timestamp,
 };
 
-pub use codec::Encode;
 use frame_benchmarking::account;
 use frame_support::{
 	assert_ok,
@@ -32,6 +31,7 @@ use frame_support::{
 use frame_system::RawOrigin;
 use module_support::{AggregatedSwapPath, Erc20InfoMapping};
 use orml_traits::{GetByKey, MultiCurrencyExtended};
+pub use parity_scale_codec::Encode;
 use primitives::currency::AssetMetadata;
 use runtime_common::{TokenInfo, LCDOT};
 use sp_consensus_aura::AURA_ENGINE_ID;
@@ -85,7 +85,8 @@ pub fn feed_price(prices: Vec<(CurrencyId, Price)>) -> DispatchResult {
 	for i in 0..MinimumCount::get() {
 		let oracle: AccountId = account("oracle", 0, i);
 		if !OperatorMembershipAcala::contains(&oracle) {
-			OperatorMembershipAcala::add_member(RawOrigin::Root.into(), MultiAddress::Id(oracle.clone()))?;
+			OperatorMembershipAcala::add_member(RawOrigin::Root.into(), MultiAddress::Id(oracle.clone()))
+				.map_or_else(|e| Err(e.error), |_| Ok(()))?;
 		}
 		AcalaOracle::feed_values(RawOrigin::Signed(oracle).into(), prices.to_vec().try_into().unwrap())
 			.map_or_else(|e| Err(e.error), |_| Ok(()))?;
@@ -265,9 +266,11 @@ pub fn initialize_swap_pools(maker: AccountId) -> Result<(), &'static str> {
 
 #[cfg(test)]
 pub mod tests {
+	use sp_runtime::BuildStorage;
+
 	pub fn new_test_ext() -> sp_io::TestExternalities {
-		frame_system::GenesisConfig::default()
-			.build_storage::<crate::Runtime>()
+		frame_system::GenesisConfig::<crate::Runtime>::default()
+			.build_storage()
 			.unwrap()
 			.into()
 	}

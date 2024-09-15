@@ -36,7 +36,7 @@ jobs:
   check-extrinsic-ordering-on-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -49,14 +49,6 @@ jobs:
         if: ${{ env.CHAIN == '' || env.VERSION == '' || env.PREVIOUS_VERSION == '' }}
         run: python .github/scripts/extrinsic_check_setup_env.py
 
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '14.x'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install Yarn
-        run: npm install -g yarn
-
       - name: Prepare output
         run: |
           echo "METADATA COMPARISON" >> output.txt
@@ -67,17 +59,13 @@ jobs:
 
       - name: Start local node
         run: |
-          docker run --name extrinsic-ordering-check-${{ env.CHAIN }}-${{ env.PREVIOUS_VERSION }} -d -p 9944:9944 --rm ghcr.io/acalanetwork/${{ env.CHAIN }}-node:${{ env.PREVIOUS_VERSION }} --chain=${{ env.CHAIN }}-dev --rpc-cors=all --ws-external --ws-port=9944 --tmp -- --dev
-          docker run --name extrinsic-ordering-check-${{ env.CHAIN }}-${{ env.VERSION }} -d -p 9955:9955 --rm ghcr.io/acalanetwork/${{ env.CHAIN }}-node:${{ env.VERSION }} --chain=${{ env.CHAIN }}-dev --rpc-cors=all --ws-external --ws-port=9955 --tmp -- --dev
+          docker run --name extrinsic-ordering-check-${{ env.CHAIN }}-${{ env.PREVIOUS_VERSION }} -d -p 9944:9944 --rm ghcr.io/acalanetwork/${{ env.CHAIN }}-node:${{ env.PREVIOUS_VERSION }} --chain=${{ env.CHAIN }}-dev --rpc-cors=all --rpc-external --rpc-port=9944 --tmp -- --dev
+          docker run --name extrinsic-ordering-check-${{ env.CHAIN }}-${{ env.VERSION }} -d -p 9955:9955 --rm ghcr.io/acalanetwork/${{ env.CHAIN }}-node:${{ env.VERSION }} --chain=${{ env.CHAIN }}-dev --rpc-cors=all --rpc-external --rpc-port=9955 --tmp -- --dev
           sleep 120
 
       - name: Compare the metadata
         run: |
-          git clone https://github.com/ermalkaleci/tools.git
-          cd tools
-          yarn install --immutable
-          yarn run:metadata ws://localhost:9944 ws://localhost:9955 >> ../output.txt
-          cd ..
+          docker run --network=host jacogr/polkadot-js-tools metadata ws://127.0.0.1:9944 ws://127.0.0.1:9955 >> output.txt
           sed -z -i 's/\n\n/\n/g' output.txt
 
       - name: Show result

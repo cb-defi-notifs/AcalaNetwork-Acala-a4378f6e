@@ -1,28 +1,29 @@
 [package]
 name = "module-idle-scheduler"
-version = "2.19.0"
+version = "2.26.0"
 authors = ["Acala Developers"]
 edition = "2021"
 
 [dependencies]
-scale-info = { version = "2.2.0", default-features = false, features = ["derive"] }
-codec = { package = "parity-scale-codec", version = "3.0.0", default-features = false }
-sp-runtime = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.42", default-features = false }
-sp-std = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.42", default-features = false }
-frame-support = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.42", default-features = false }
-frame-system = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.42", default-features = false }
-acala-primitives = { path = "../../primitives", default-features = false }
-module-support = { path = "../support", default-features = false }
+log = { workspace = true }
+scale-info = { workspace = true }
+parity-scale-codec = { workspace = true }
+sp-runtime = { workspace = true }
+sp-std = { workspace = true }
+frame-support = { workspace = true }
+frame-system = { workspace = true }
+primitives = { workspace = true }
+module-support = { workspace = true }
 
 [dev-dependencies]
-sp-core = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.42" }
-sp-io = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.42" }
+sp-core = { workspace = true, features = ["std"] }
+sp-io = { workspace = true, features = ["std"] }
 
 [features]
 default = ["std"]
 std = [
-	"acala-primitives/std",
-	"codec/std",
+	"primitives/std",
+	"parity-scale-codec/std",
 	"frame-support/std",
 	"frame-system/std",
 	"module-support/std",

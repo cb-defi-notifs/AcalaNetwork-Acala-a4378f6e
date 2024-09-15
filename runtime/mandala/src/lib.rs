@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -30,41 +30,39 @@
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
-use codec::{Decode, DecodeLimit, Encode};
 use cumulus_pallet_parachain_system::RelaychainDataProvider;
-use frame_support::pallet_prelude::InvalidTransaction;
-pub use frame_support::{
+use frame_support::{
 	construct_runtime,
-	dispatch::DispatchClass,
-	log, parameter_types,
+	pallet_prelude::InvalidTransaction,
+	parameter_types,
 	traits::{
-		ConstBool, ConstU128, ConstU16, ConstU32, Contains, ContainsLengthBound, Currency as PalletCurrency,
-		EnsureOrigin, EqualPrivilegeOnly, Everything, Get, Imbalance, InstanceFilter, IsSubType, IsType,
-		KeyOwnerProofSystem, LockIdentifier, Nothing, OnRuntimeUpgrade, OnUnbalanced, Randomness, SortedMembers,
-		U128CurrencyToVote, WithdrawReasons,
+		fungible::HoldConsideration,
+		tokens::{PayFromAccount, UnityAssetBalanceConversion},
+		ConstBool, ConstU128, ConstU32, ConstU64, Contains, ContainsLengthBound, Currency as PalletCurrency,
+		EnsureOrigin, EqualPrivilegeOnly, Get, Imbalance, InstanceFilter, LinearStoragePrice, LockIdentifier,
+		OnUnbalanced, SortedMembers,
 	},
-	weights::{
-		constants::{BlockExecutionWeight, RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
-		ConstantMultiplier, IdentityFee, Weight,
-	},
-	PalletId, RuntimeDebug, StorageValue,
+	transactional,
+	weights::{constants::RocksDbWeight, ConstantMultiplier, Weight},
+	PalletId,
 };
 use frame_system::{EnsureRoot, EnsureSigned, RawOrigin};
 use module_asset_registry::{AssetIdMaps, EvmErc20InfoMapping};
 use module_cdp_engine::CollateralCurrencyIds;
-use module_currencies::{BasicCurrencyAdapter, Currency};
+use module_currencies::BasicCurrencyAdapter;
 use module_evm::{runner::RunnerExtended, CallInfo, CreateInfo, EvmChainId, EvmTask};
 use module_evm_accounts::EvmAddressMapping;
 use module_relaychain::RelayChainCallBuilder;
-use module_support::{AssetIdMapping, DispatchableTask, ExchangeRateProvider, FractionalRate, PoolId};
+use module_support::{AddressMapping, AssetIdMapping, DispatchableTask, ExchangeRateProvider, FractionalRate, PoolId};
 use module_transaction_payment::TargetedFeeAdjustment;
+use parity_scale_codec::{Decode, DecodeLimit, Encode};
 use scale_info::TypeInfo;
 
 use orml_tokens::CurrencyAdapter;
 use orml_traits::{
-	create_median_value_data_provider, parameter_type_with_key, DataFeeder, DataProviderExtended, GetByKey,
+	create_median_value_data_provider, define_aggregrated_parameters, parameter_type_with_key,
+	parameters::ParameterStoreAdapter, DataFeeder, DataProviderExtended, GetByKey, MultiCurrency,
 };
-use orml_utilities::simulate_execution;
 use pallet_transaction_payment::{FeeDetails, RuntimeDispatchInfo};
 use primitives::{
 	define_combined_task,
@@ -78,11 +76,11 @@ use sp_core::{crypto::KeyTypeId, OpaqueMetadata, H160};
 use sp_runtime::{
 	create_runtime_str, generic, impl_opaque_keys,
 	traits::{
-		AccountIdConversion, BadOrigin, BlakeTwo256, Block as BlockT, Bounded, Convert, SaturatedConversion,
-		StaticLookup, Verify,
+		AccountIdConversion, BadOrigin, BlakeTwo256, Block as BlockT, Bounded, Convert, IdentityLookup,
+		SaturatedConversion, StaticLookup,
 	},
 	transaction_validity::{TransactionSource, TransactionValidity},
-	ApplyExtrinsicResult, ArithmeticError, DispatchResult, FixedPointNumber,
+	ApplyExtrinsicResult, ArithmeticError, DispatchResult, FixedPointNumber, RuntimeDebug,
 };
 use sp_std::prelude::*;
 
@@ -103,19 +101,20 @@ pub use primitives::{
 	DataProviderId, EraIndex, Hash, Lease, Moment, Multiplier, Nonce, ReserveIdentifier, Share, Signature, TokenSymbol,
 	TradingPair,
 };
-pub use runtime_common::{
-	cent, dollar, microcent, millicent, AcalaDropAssets, AllPrecompiles, CheckRelayNumber, CurrencyHooks,
+use runtime_common::precompile::AcalaPrecompiles;
+use runtime_common::{
+	cent, dollar, millicent, AllPrecompiles, CheckRelayNumber, ConsensusHook, CurrencyHooks,
 	EnsureRootOrAllGeneralCouncil, EnsureRootOrAllTechnicalCommittee, EnsureRootOrHalfFinancialCouncil,
 	EnsureRootOrHalfGeneralCouncil, EnsureRootOrHalfHomaCouncil, EnsureRootOrOneGeneralCouncil,
 	EnsureRootOrOneThirdsTechnicalCommittee, EnsureRootOrThreeFourthsGeneralCouncil,
 	EnsureRootOrTwoThirdsGeneralCouncil, EnsureRootOrTwoThirdsTechnicalCommittee, ExchangeRate,
 	ExistentialDepositsTimesOneHundred, FinancialCouncilInstance, FinancialCouncilMembershipInstance, GasToWeight,
 	GeneralCouncilInstance, GeneralCouncilMembershipInstance, HomaCouncilInstance, HomaCouncilMembershipInstance,
-	MaxTipsOfPriority, OffchainSolutionWeightLimit, OperationalFeeMultiplier, OperatorMembershipInstanceAcala, Price,
-	ProxyType, Rate, Ratio, RuntimeBlockLength, RuntimeBlockWeights, SystemContractsFilter, TechnicalCommitteeInstance,
+	MaxTipsOfPriority, OperationalFeeMultiplier, OperatorMembershipInstanceAcala, Price, ProxyType, RandomnessSource,
+	Rate, Ratio, RuntimeBlockLength, RuntimeBlockWeights, TechnicalCommitteeInstance,
 	TechnicalCommitteeMembershipInstance, TimeStampedPrice, TipPerWeightStep, ACA, AUSD, DOT, KSM, LCDOT, LDOT,
 };
-pub use xcm::{prelude::*, v3::Weight as XcmWeight};
+use xcm::prelude::*;
 
 /// Import the stable_asset pallet.
 pub use nutsfinance_stable_asset;
@@ -133,17 +132,14 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("mandala"),
 	impl_name: create_runtime_str!("mandala"),
 	authoring_version: 1,
-	spec_version: 2190,
+	spec_version: 2260,
 	impl_version: 0,
-	#[cfg(not(feature = "disable-runtime-api"))]
 	apis: RUNTIME_API_VERSIONS,
-	#[cfg(feature = "disable-runtime-api")]
-	apis: sp_version::create_apis_vec![[]],
 	transaction_version: 3,
-	state_version: 0,
+	state_version: 1,
 };
 
-/// The version infromation used to identify this runtime when compiled
+/// The version information used to identify this runtime when compiled
 /// natively.
 #[cfg(feature = "std")]
 pub fn native_version() -> NativeVersion {
@@ -222,11 +218,10 @@ impl frame_system::Config for Runtime {
 	type AccountId = AccountId;
 	type RuntimeCall = RuntimeCall;
 	type Lookup = (Indices, EvmAccounts);
-	type Index = Nonce;
-	type BlockNumber = BlockNumber;
+	type Nonce = Nonce;
 	type Hash = Hash;
 	type Hashing = BlakeTwo256;
-	type Header = generic::Header<BlockNumber, BlakeTwo256>;
+	type Block = Block;
 	type RuntimeEvent = RuntimeEvent;
 	type RuntimeOrigin = RuntimeOrigin;
 	type BlockHashCount = BlockHashCount;
@@ -246,12 +241,20 @@ impl frame_system::Config for Runtime {
 	type SS58Prefix = SS58Prefix;
 	type OnSetCode = cumulus_pallet_parachain_system::ParachainSetCode<Self>;
 	type MaxConsumers = ConstU32<16>;
+	type RuntimeTask = ();
+	type SingleBlockMigrations = ();
+	type MultiBlockMigrator = ();
+	type PreInherents = ();
+	type PostInherents = ();
+	type PostTransactions = ();
 }
 
 impl pallet_aura::Config for Runtime {
 	type AuthorityId = AuraId;
 	type DisabledValidators = ();
 	type MaxAuthorities = ConstU32<32>;
+	type AllowMultipleBlocksPerSlot = ConstBool<false>;
+	type SlotDuration = ConstU64<SLOT_DURATION>;
 }
 
 impl pallet_authorship::Config for Runtime {
@@ -352,9 +355,9 @@ impl pallet_balances::Config for Runtime {
 	type MaxReserves = MaxReserves;
 	type ReserveIdentifier = ReserveIdentifier;
 	type WeightInfo = ();
-	type HoldIdentifier = ReserveIdentifier;
+	type RuntimeHoldReason = RuntimeHoldReason;
+	type RuntimeFreezeReason = RuntimeFreezeReason;
 	type FreezeIdentifier = ();
-	type MaxHolds = MaxReserves;
 	type MaxFreezes = ();
 }
 
@@ -369,6 +372,7 @@ parameter_types! {
 impl pallet_sudo::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type RuntimeCall = RuntimeCall;
+	type WeightInfo = ();
 }
 
 parameter_types! {
@@ -532,7 +536,7 @@ impl pallet_multisig::Config for Runtime {
 pub struct GeneralCouncilProvider;
 impl SortedMembers<AccountId> for GeneralCouncilProvider {
 	fn sorted_members() -> Vec<AccountId> {
-		GeneralCouncil::members()
+		pallet_collective::Members::<Runtime, pallet_collective::Instance1>::get() // GeneralCouncil::members()
 	}
 
 	#[cfg(feature = "runtime-benchmarks")]
@@ -572,25 +576,29 @@ parameter_types! {
 	pub DataDepositPerByte: Balance = cent(ACA);
 	pub const MaximumReasonLength: u32 = 16384;
 	pub const MaxApprovals: u32 = 100;
+	pub const PayoutSpendPeriod: BlockNumber = 30 * DAYS;
 }
 
 impl pallet_treasury::Config for Runtime {
 	type PalletId = TreasuryPalletId;
 	type Currency = Balances;
-	type ApproveOrigin = EnsureRootOrHalfGeneralCouncil;
 	type RejectOrigin = EnsureRootOrHalfGeneralCouncil;
 	type SpendOrigin = frame_support::traits::NeverEnsureOrigin<Balance>;
 	type RuntimeEvent = RuntimeEvent;
-	type OnSlash = ();
-	type ProposalBond = ProposalBond;
-	type ProposalBondMinimum = ProposalBondMinimum;
-	type ProposalBondMaximum = ProposalBondMaximum;
 	type SpendPeriod = SpendPeriod;
 	type Burn = Burn;
 	type BurnDestination = ();
 	type SpendFunds = Bounties;
 	type WeightInfo = ();
 	type MaxApprovals = MaxApprovals;
+	type AssetKind = ();
+	type Beneficiary = AccountId;
+	type BeneficiaryLookup = IdentityLookup<Self::Beneficiary>;
+	type Paymaster = PayFromAccount<Balances, TreasuryAccount>;
+	type BalanceConverter = UnityAssetBalanceConversion;
+	type PayoutPeriod = PayoutSpendPeriod;
+	#[cfg(feature = "runtime-benchmarks")]
+	type BenchmarkHelper = ();
 }
 
 impl pallet_bounties::Config for Runtime {
@@ -606,6 +614,7 @@ impl pallet_bounties::Config for Runtime {
 	type MaximumReasonLength = MaximumReasonLength;
 	type WeightInfo = ();
 	type ChildBountyManager = ();
+	type OnSlash = ();
 }
 
 impl pallet_tips::Config for Runtime {
@@ -616,7 +625,9 @@ impl pallet_tips::Config for Runtime {
 	type TipCountdown = TipCountdown;
 	type TipFindersFee = TipFindersFee;
 	type TipReportDepositBase = TipReportDepositBase;
+	type MaxTipAmount = ();
 	type WeightInfo = ();
+	type OnSlash = ();
 }
 
 parameter_types! {
@@ -711,7 +722,7 @@ impl orml_authority::Config for Runtime {
 pub struct PaymentsDisputeResolver;
 impl orml_payments::DisputeResolver<AccountId> for PaymentsDisputeResolver {
 	fn get_resolver_account() -> AccountId {
-		Sudo::key().expect("Sudo key not set!")
+		TreasuryAccount::get()
 	}
 }
 
@@ -725,7 +736,7 @@ impl orml_payments::FeeHandler<Runtime> for PaymentsFeeHandler {
 	) -> (AccountId, Percent) {
 		// we do not charge any fee
 		const MARKETPLACE_FEE_PERCENT: Percent = Percent::from_percent(0);
-		let fee_receiver = Sudo::key().expect("Sudo key not set!");
+		let fee_receiver = TreasuryAccount::get();
 		(fee_receiver, MARKETPLACE_FEE_PERCENT)
 	}
 }
@@ -761,7 +772,7 @@ impl pallet_elections_phragmen::Config for Runtime {
 	type PalletId = PhragmenElectionPalletId;
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = CurrencyAdapter<Runtime, GetLiquidCurrencyId>;
-	type CurrencyToVote = U128CurrencyToVote;
+	type CurrencyToVote = sp_staking::currency_to_vote::U128CurrencyToVote;
 	type ChangeMembers = HomaCouncil;
 	type InitializeMembers = HomaCouncil;
 	type CandidacyBond = CandidacyBond;
@@ -785,6 +796,15 @@ parameter_types! {
 	pub const MaxFeedValues: u32 = 10; // max 10 values allowd to feed in one call.
 }
 
+#[cfg(feature = "runtime-benchmarks")]
+pub struct BenchmarkHelper;
+#[cfg(feature = "runtime-benchmarks")]
+impl orml_oracle::BenchmarkHelper<CurrencyId, Price, MaxFeedValues> for BenchmarkHelper {
+	fn get_currency_id_value_pairs() -> sp_runtime::BoundedVec<(CurrencyId, Price), MaxFeedValues> {
+		sp_runtime::BoundedVec::default()
+	}
+}
+
 type AcalaDataProvider = orml_oracle::Instance1;
 impl orml_oracle::Config<AcalaDataProvider> for Runtime {
 	type RuntimeEvent = RuntimeEvent;
@@ -798,6 +818,8 @@ impl orml_oracle::Config<AcalaDataProvider> for Runtime {
 	type MaxHasDispatchedSize = ConstU32<40>;
 	type WeightInfo = weights::orml_oracle::WeightInfo<Runtime>;
 	type MaxFeedValues = MaxFeedValues;
+	#[cfg(feature = "runtime-benchmarks")]
+	type BenchmarkHelper = BenchmarkHelper;
 }
 
 create_median_value_data_provider!(
@@ -1004,6 +1026,7 @@ impl pallet_scheduler::Config for Runtime {
 parameter_types! {
 	pub PreimageBaseDeposit: Balance = deposit(2, 64);
 	pub PreimageByteDeposit: Balance = deposit(0, 1);
+	pub const PreimageHoldReason: RuntimeHoldReason = RuntimeHoldReason::Preimage(pallet_preimage::HoldReason::Preimage);
 }
 
 impl pallet_preimage::Config for Runtime {
@@ -1011,8 +1034,12 @@ impl pallet_preimage::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
 	type ManagerOrigin = EnsureRoot<AccountId>;
-	type BaseDeposit = PreimageBaseDeposit;
-	type ByteDeposit = PreimageByteDeposit;
+	type Consideration = HoldConsideration<
+		AccountId,
+		Balances,
+		PreimageHoldReason,
+		LinearStoragePrice<PreimageBaseDeposit, PreimageByteDeposit, Balance>,
+	>;
 }
 
 parameter_types! {
@@ -1113,6 +1140,7 @@ parameter_types! {
 	pub MinimumDebitValue: Balance = dollar(AUSD);
 	pub MaxSwapSlippageCompareToOracle: Ratio = Ratio::saturating_from_rational(10, 100);
 	pub MaxLiquidationContractSlippage: Ratio = Ratio::saturating_from_rational(15, 100);
+	pub SettleErc20EvmOrigin: AccountId = AccountId::from(hex_literal::hex!("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")); // `5HrN7fHLXWcFiXPwwtq2EkSGns9eMt5P7SpeTPewumZy6ftb`
 }
 
 impl module_cdp_engine::Config for Runtime {
@@ -1140,6 +1168,8 @@ impl module_cdp_engine::Config for Runtime {
 	type PalletId = CDPEnginePalletId;
 	type EvmAddressMapping = module_evm_accounts::EvmAddressMapping<Runtime>;
 	type Swap = AcalaSwap;
+	type EVMBridge = module_evm_bridge::EVMBridge<Runtime>;
+	type SettleErc20EvmOrigin = SettleErc20EvmOrigin;
 	type WeightInfo = weights::module_cdp_engine::WeightInfo<Runtime>;
 }
 
@@ -1300,19 +1330,15 @@ impl module_transaction_payment::Config for Runtime {
 	type DefaultFeeTokens = DefaultFeeTokens;
 }
 
-parameter_types! {
-	pub const InstantUnstakeFee: Permill = Permill::from_percent(10);
-}
-
 impl module_earning::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
+	type ParameterStore = ParameterStoreAdapter<Parameters, module_earning::Parameters>;
 	type OnBonded = module_incentives::OnEarningBonded<Runtime>;
 	type OnUnbonded = module_incentives::OnEarningUnbonded<Runtime>;
 	type OnUnstakeFee = Treasury; // fee goes to treasury
 	type MinBond = ConstU128<100>;
 	type UnbondingPeriod = ConstU32<3>;
-	type InstantUnstakeFee = InstantUnstakeFee;
 	type MaxUnbondingChunks = ConstU32<3>;
 	type LockIdentifier = EarningLockIdentifier;
 	type WeightInfo = weights::module_earning::WeightInfo<Runtime>;
@@ -1336,11 +1362,29 @@ impl module_asset_registry::Config for Runtime {
 	type WeightInfo = weights::module_asset_registry::WeightInfo<Runtime>;
 }
 
+parameter_type_with_key! {
+	pub MinimalShares: |pool_id: PoolId| -> Balance {
+		match pool_id {
+			PoolId::Loans(currency_id) | PoolId::Dex(currency_id) | PoolId::Earning(currency_id) => {
+				if *currency_id == GetNativeCurrencyId::get() {
+					NativeTokenExistentialDeposit::get()
+				} else {
+					ExistentialDeposits::get(currency_id)
+				}
+			}
+			PoolId::NomineesElection => {
+				ExistentialDeposits::get(&GetLiquidCurrencyId::get())
+			}
+		}
+	};
+}
+
 impl orml_rewards::Config for Runtime {
 	type Share = Balance;
 	type Balance = Balance;
 	type PoolId = PoolId;
 	type CurrencyId = CurrencyId;
+	type MinimalShares = MinimalShares;
 	type Handler = Incentives;
 }
 
@@ -1366,13 +1410,13 @@ parameter_types! {
 	pub DefaultExchangeRate: ExchangeRate = ExchangeRate::saturating_from_rational(10, 100);	// 1 : 10
 }
 
-pub fn create_x2_parachain_multilocation(index: u16) -> MultiLocation {
-	MultiLocation::new(
+pub fn create_x2_parachain_location(index: u16) -> Location {
+	Location::new(
 		1,
-		X1(AccountId32 {
+		AccountId32 {
 			network: None,
 			id: Utility::derivative_account_id(ParachainInfo::get().into_account_truncating(), index).into(),
-		}),
+		},
 	)
 }
 
@@ -1383,6 +1427,7 @@ parameter_types! {
 	];
 	pub MintThreshold: Balance = dollar(DOT);
 	pub RedeemThreshold: Balance = 10 * dollar(LDOT);
+	pub const BondingDuration: EraIndex = 28;
 }
 
 impl module_homa::Config for Runtime {
@@ -1395,22 +1440,64 @@ impl module_homa::Config for Runtime {
 	type TreasuryAccount = HomaTreasuryAccount;
 	type DefaultExchangeRate = DefaultExchangeRate;
 	type ActiveSubAccountsIndexList = ActiveSubAccountsIndexList;
-	type BondingDuration = ConstU32<28>;
+	type BondingDuration = BondingDuration;
 	type MintThreshold = MintThreshold;
 	type RedeemThreshold = RedeemThreshold;
 	type RelayChainBlockNumber = RelaychainDataProvider<Runtime>;
 	type XcmInterface = XcmInterface;
 	type WeightInfo = weights::module_homa::WeightInfo<Runtime>;
+	type NominationsProvider = NomineesElection;
+	type ProcessRedeemRequestsLimit = ConstU32<2_000>;
+}
+
+parameter_types! {
+	pub MinBondAmount: Balance = 1_000 * dollar(LDOT);
+	pub ValidatorInsuranceThreshold: Balance = 10_000 * dollar(LDOT);
+}
+
+impl module_homa_validator_list::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type RelayChainAccountId = AccountId;
+	type LiquidTokenCurrency = module_currencies::Currency<Runtime, GetLiquidCurrencyId>;
+	type MinBondAmount = MinBondAmount;
+	type BondingDuration = BondingDuration;
+	type ValidatorInsuranceThreshold = ValidatorInsuranceThreshold;
+	type GovernanceOrigin = EnsureRootOrHalfGeneralCouncil;
+	type LiquidStakingExchangeRateProvider = Homa;
+	type CurrentEra = Homa;
+	type WeightInfo = weights::module_homa_validator_list::WeightInfo<Runtime>;
+}
+
+parameter_types! {
+	pub MinNomineesElectionBondThreshold: Balance = 10 * dollar(LDOT);
+	pub const MaxNominateesCount: u32 = 16;
+}
+
+impl module_nominees_election::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type Currency = module_currencies::Currency<Runtime, GetLiquidCurrencyId>;
+	type NomineeId = AccountId;
+	type PalletId = NomineesElectionId;
+	type MinBond = MinNomineesElectionBondThreshold;
+	type BondingDuration = BondingDuration;
+	type MaxNominateesCount = MaxNominateesCount;
+	type MaxUnbondingChunks = ConstU32<7>;
+	type NomineeFilter = HomaValidatorList;
+	type GovernanceOrigin = EnsureRootOrHalfGeneralCouncil;
+	type OnBonded = module_incentives::OnNomineesElectionBonded<Runtime>;
+	type OnUnbonded = module_incentives::OnNomineesElectionUnbonded<Runtime>;
+	type CurrentEra = Homa;
+	type WeightInfo = weights::module_nominees_election::WeightInfo<Runtime>;
 }
 
 parameter_types! {
 	pub ParachainAccount: AccountId = ParachainInfo::get().into_account_truncating();
 }
 
-pub struct SubAccountIndexMultiLocationConvertor;
-impl Convert<u16, MultiLocation> for SubAccountIndexMultiLocationConvertor {
-	fn convert(sub_account_index: u16) -> MultiLocation {
-		create_x2_parachain_multilocation(sub_account_index)
+pub struct SubAccountIndexLocationConvertor;
+impl Convert<u16, Location> for SubAccountIndexLocationConvertor {
+	fn convert(sub_account_index: u16) -> Location {
+		create_x2_parachain_location(sub_account_index)
 	}
 }
 
@@ -1420,28 +1507,11 @@ impl module_xcm_interface::Config for Runtime {
 	type StakingCurrencyId = GetStakingCurrencyId;
 	type ParachainAccount = ParachainAccount;
 	type RelayChainUnbondingSlashingSpans = ConstU32<5>;
-	type SovereignSubAccountLocationConvert = SubAccountIndexMultiLocationConvertor;
-	type RelayChainCallBuilder = RelayChainCallBuilder<ParachainInfo>;
+	type SovereignSubAccountLocationConvert = SubAccountIndexLocationConvertor;
+	type RelayChainCallBuilder = RelayChainCallBuilder<ParachainInfo, module_relaychain::PolkadotRelayChainCall>;
 	type XcmTransfer = XTokens;
 	type SelfLocation = xcm_config::SelfLocation;
-	type AccountIdToMultiLocation = xcm_config::AccountIdToMultiLocation;
-}
-
-parameter_types! {
-	pub MinCouncilBondThreshold: Balance = dollar(LDOT);
-}
-
-impl module_nominees_election::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
-	type Currency = Currency<Runtime, GetLiquidCurrencyId>;
-	type NomineeId = AccountId;
-	type PalletId = NomineesElectionId;
-	type MinBond = MinCouncilBondThreshold;
-	type BondingDuration = ConstU32<28>;
-	type NominateesCount = ConstU32<7>;
-	type MaxUnbondingChunks = ConstU32<7>;
-	type NomineeFilter = runtime_common::DummyNomineeFilter;
-	type WeightInfo = weights::module_nominees_election::WeightInfo<Runtime>;
+	type AccountIdToLocation = xcm_config::AccountIdToLocation;
 }
 
 parameter_types! {
@@ -1578,7 +1648,7 @@ impl pallet_proxy::Config for Runtime {
 
 parameter_types! {
 	pub NetworkContractSource: H160 = H160::from_low_u64_be(0);
-	pub PrecompilesValue: AllPrecompiles<Runtime, module_transaction_pause::PausedPrecompileFilter<Runtime>> = AllPrecompiles::<_, _>::mandala();
+	pub PrecompilesValue: AllPrecompiles<Runtime, module_transaction_pause::PausedPrecompileFilter<Runtime>, AcalaPrecompiles<Runtime>> = AllPrecompiles::<_, _, _>::mandala();
 }
 
 #[cfg(feature = "with-ethereum-compatibility")]
@@ -1629,7 +1699,7 @@ impl<I: From<Balance>> frame_support::traits::Get<I> for TxFeePerGasV2 {
 }
 
 #[cfg(feature = "with-ethereum-compatibility")]
-static LONDON_CONFIG: module_evm_utility::evm::Config = module_evm_utility::evm::Config::london();
+static SHANGHAI_CONFIG: module_evm_utility::evm::Config = module_evm_utility::evm::Config::shanghai();
 
 impl module_evm::Config for Runtime {
 	type AddressMapping = EvmAddressMapping<Runtime>;
@@ -1639,11 +1709,12 @@ impl module_evm::Config for Runtime {
 	type StorageDepositPerByte = StorageDepositPerByte;
 	type TxFeePerGas = TxFeePerGas;
 	type RuntimeEvent = RuntimeEvent;
-	type PrecompilesType = AllPrecompiles<Self, module_transaction_pause::PausedPrecompileFilter<Self>>;
+	type PrecompilesType =
+		AllPrecompiles<Self, module_transaction_pause::PausedPrecompileFilter<Self>, AcalaPrecompiles<Runtime>>;
 	type PrecompilesValue = PrecompilesValue;
 	type GasToWeight = GasToWeight;
 	type ChargeTransactionPayment = module_transaction_payment::ChargeTransactionPayment<Runtime>;
-	type NetworkContractOrigin = EnsureRootOrTwoThirdsTechnicalCommittee;
+	type NetworkContractOrigin = EnsureRootOrThreeFourthsGeneralCouncil;
 	type NetworkContractSource = NetworkContractSource;
 	type DeveloperDeposit = DeveloperDeposit;
 	type PublicationFee = PublicationFee;
@@ -1651,13 +1722,14 @@ impl module_evm::Config for Runtime {
 	type FreePublicationOrigin = EnsureRootOrHalfGeneralCouncil;
 	type Runner = module_evm::runner::stack::Runner<Self>;
 	type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Self, Aura>;
+	type Randomness = RandomnessSource<Runtime>;
 	type Task = ScheduledTasks;
 	type IdleScheduler = IdleScheduler;
 	type WeightInfo = weights::module_evm::WeightInfo<Runtime>;
 
 	#[cfg(feature = "with-ethereum-compatibility")]
 	fn config() -> &'static module_evm_utility::evm::Config {
-		&LONDON_CONFIG
+		&SHANGHAI_CONFIG
 	}
 }
 
@@ -1680,13 +1752,15 @@ impl cumulus_pallet_parachain_system::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type OnSystemEvent = ();
 	type SelfParaId = ParachainInfo;
-	type DmpMessageHandler = DmpQueue;
+	type DmpQueue = frame_support::traits::EnqueueWithOrigin<MessageQueue, xcm_config::RelayOrigin>;
 	type ReservedDmpWeight = ReservedDmpWeight;
 	type OutboundXcmpMessageSource = XcmpQueue;
 	type XcmpMessageHandler = XcmpQueue;
 	type ReservedXcmpWeight = ReservedXcmpWeight;
 	type CheckAssociatedRelayNumber =
 		CheckRelayNumber<EvmChainId<Runtime>, cumulus_pallet_parachain_system::RelayNumberStrictlyIncreases>;
+	type WeightInfo = cumulus_pallet_parachain_system::weights::SubstrateWeight<Runtime>;
+	type ConsensusHook = ConsensusHook<Runtime>;
 }
 
 impl parachain_info::Config for Runtime {}
@@ -1781,6 +1855,7 @@ parameter_types!(
 impl module_idle_scheduler::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type WeightInfo = weights::module_idle_scheduler::WeightInfo<Runtime>;
+	type Index = Nonce;
 	type Task = ScheduledTasks;
 	type MinimumWeightRemainInBlock = MinimumWeightRemainInBlock;
 	type RelayChainBlockNumberProvider = RelaychainDataProvider<Runtime>;
@@ -1792,8 +1867,6 @@ impl module_idle_scheduler::Config for Runtime {
 impl cumulus_pallet_aura_ext::Config for Runtime {}
 
 parameter_types!(
-	// Crowdloan vault address: `132zsjMwGjNaUXF5XjUCDs2cDEq9Qao51TsL9RSUTGZbinVK`
-	pub CrowdloanVault: AccountId = AccountId::from(hex_literal::hex!("59fe89295c2e57d7b4d4d8be9e00a3802e513703ab4b5b424ed0a646e899d3c9"));
 	pub const LiquidCrowdloanCurrencyId: CurrencyId = LCDOT;
 );
 
@@ -1804,9 +1877,20 @@ impl module_liquid_crowdloan::Config for Runtime {
 	type RelayChainCurrencyId = GetStakingCurrencyId;
 	type PalletId = LiquidCrowdloanPalletId;
 	type GovernanceOrigin = EnsureRootOrHalfGeneralCouncil;
-	type CrowdloanVault = CrowdloanVault;
-	type XcmTransfer = XcmInterface;
 	type WeightInfo = weights::module_liquid_crowdloan::WeightInfo<Runtime>;
+}
+
+define_aggregrated_parameters! {
+	pub RuntimeParameters = {
+		Earning: module_earning::Parameters = 0,
+	}
+}
+
+impl orml_parameters::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type AggregratedKeyValue = RuntimeParameters;
+	type AdminOrigin = EnsureRootOrThreeFourthsGeneralCouncil;
+	type WeightInfo = ();
 }
 
 #[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug)]
@@ -1829,7 +1913,11 @@ impl Convert<(RuntimeCall, SignedExtra), Result<(EthereumTransactionMessage, Sig
 				valid_until,
 			}) => {
 				if System::block_number() > valid_until {
-					return Err(InvalidTransaction::Stale);
+					if cfg!(feature = "tracing") {
+						// skip check when enable tracing feature
+					} else {
+						return Err(InvalidTransaction::Stale);
+					}
 				}
 
 				let (_, _, _, _, mortality, check_nonce, _, _, charge) = extra.clone();
@@ -1874,7 +1962,11 @@ impl Convert<(RuntimeCall, SignedExtra), Result<(EthereumTransactionMessage, Sig
 					decode_gas_price(gas_price, gas_limit, TxFeePerGasV2::get()).ok_or(InvalidTransaction::Stale)?;
 
 				if System::block_number() > valid_until {
-					return Err(InvalidTransaction::Stale);
+					if cfg!(feature = "tracing") {
+						// skip check when enable tracing feature
+					} else {
+						return Err(InvalidTransaction::Stale);
+					}
 				}
 
 				let (_, _, _, _, mortality, check_nonce, _, _, charge) = extra.clone();
@@ -1917,32 +2009,6 @@ impl Convert<(RuntimeCall, SignedExtra), Result<(EthereumTransactionMessage, Sig
 	}
 }
 
-#[derive(Clone, Encode, Decode, PartialEq, Eq, RuntimeDebug)]
-pub struct PayerSignatureVerification;
-
-impl Convert<(RuntimeCall, SignedExtra), Result<(), InvalidTransaction>> for PayerSignatureVerification {
-	fn convert((call, extra): (RuntimeCall, SignedExtra)) -> Result<(), InvalidTransaction> {
-		if let RuntimeCall::TransactionPayment(module_transaction_payment::Call::with_fee_paid_by {
-			call,
-			payer_addr,
-			payer_sig,
-		}) = call
-		{
-			let payer_account: [u8; 32] = payer_addr
-				.encode()
-				.as_slice()
-				.try_into()
-				.map_err(|_| InvalidTransaction::BadSigner)?;
-			// payer signature is aim at inner call of `with_fee_paid_by` call.
-			let raw_payload = SignedPayload::new(*call, extra).map_err(|_| InvalidTransaction::BadSigner)?;
-			if !raw_payload.using_encoded(|payload| payer_sig.verify(payload, &payer_account.into())) {
-				return Err(InvalidTransaction::BadProof);
-			}
-		}
-		Ok(())
-	}
-}
-
 /// Block header type as expected by this runtime.
 pub type Header = generic::Header<BlockNumber, BlakeTwo256>;
 /// Block type as expected by this runtime.
@@ -1967,14 +2033,8 @@ pub type SignedExtra = (
 	module_transaction_payment::ChargeTransactionPayment<Runtime>,
 );
 /// Unchecked extrinsic type as expected by this runtime.
-pub type UncheckedExtrinsic = AcalaUncheckedExtrinsic<
-	RuntimeCall,
-	SignedExtra,
-	ConvertEthereumTx,
-	StorageDepositPerByte,
-	TxFeePerGas,
-	PayerSignatureVerification,
->;
+pub type UncheckedExtrinsic =
+	AcalaUncheckedExtrinsic<RuntimeCall, SignedExtra, ConvertEthereumTx, StorageDepositPerByte, TxFeePerGas>;
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<RuntimeCall, SignedExtra>;
 /// Extrinsic type that has already been checked.
@@ -1986,22 +2046,14 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPalletsWithSystem,
-	(
-		pallet_balances::migration::MigrateToTrackInactive<Runtime, xcm_config::CheckingAccount>,
-		pallet_scheduler::migration::v4::CleanupAgendas<Runtime>,
-		// "Use 2D weights in XCM v3" <https://github.com/paritytech/polkadot/pull/6134>
-		pallet_xcm::migration::v1::MigrateToV1<Runtime>,
-		orml_unknown_tokens::Migration<Runtime>,
-		// Note: The following Migrations do not use the StorageVersion feature, must to be removed after the upgrade
-	),
+	Migrations,
 >;
 
+#[allow(unused_parens)]
+type Migrations = ();
+
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = primitives::Block,
-		UncheckedExtrinsic = UncheckedExtrinsic
-	{
+	pub enum Runtime {
 		// Core
 		System: frame_system = 0,
 		Timestamp: pallet_timestamp = 1,
@@ -2055,6 +2107,7 @@ construct_runtime!(
 		Auction: orml_auction = 100,
 		Rewards: orml_rewards = 101,
 		OrmlNFT: orml_nft exclude_parts { Call } = 102,
+		Parameters: orml_parameters = 103,
 
 		// Acala Core
 		Prices: module_prices = 110,
@@ -2074,6 +2127,7 @@ construct_runtime!(
 		NomineesElection: module_nominees_election = 131,
 		Homa: module_homa = 136,
 		XcmInterface: module_xcm_interface = 137,
+		HomaValidatorList: module_homa_validator_list = 138,
 
 		// Acala Other
 		Incentives: module_incentives = 140,
@@ -2088,10 +2142,11 @@ construct_runtime!(
 		XcmpQueue: cumulus_pallet_xcmp_queue = 170,
 		PolkadotXcm: pallet_xcm = 171,
 		CumulusXcm: cumulus_pallet_xcm exclude_parts { Call } = 172,
-		DmpQueue: cumulus_pallet_dmp_queue = 173,
+		// DmpQueue is removed
 		XTokens: orml_xtokens = 174,
-		UnknownTokens: orml_unknown_tokens exclude_parts { Call } = 175,
+		UnknownTokens: orml_unknown_tokens = 175,
 		OrmlXcm: orml_xcm = 176,
+		MessageQueue: pallet_message_queue = 177,
 
 		// Smart contracts
 		EVM: module_evm = 180,
@@ -2137,6 +2192,7 @@ mod benches {
 		[module_emergency_shutdown, benchmarking::emergency_shutdown]
 		[module_evm, benchmarking::evm]
 		[module_homa, benchmarking::homa]
+		[module_homa_validator_list, benchmarking::homa_validator_list]
 		[module_honzon, benchmarking::honzon]
 		[module_cdp_treasury, benchmarking::cdp_treasury]
 		[module_collator_selection, benchmarking::collator_selection]
@@ -2153,14 +2209,16 @@ mod benches {
 		[orml_vesting, benchmarking::vesting]
 		[orml_auction, benchmarking::auction]
 		[orml_authority, benchmarking::authority]
-		[orml_oracle, benchmarking::oracle]
 		[nutsfinance_stable_asset, benchmarking::nutsfinance_stable_asset]
 		[module_idle_scheduler, benchmarking::idle_scheduler]
 		[module_aggregated_dex, benchmarking::aggregated_dex]
 	);
+	// frame_benchmarking::define_benchmarks!(
+	// 	// XCM
+	// 	[pallet_xcm, PalletXcmExtrinsicsBenchmark::<Runtime>]
+	// );
 }
 
-#[cfg(not(feature = "disable-runtime-api"))]
 impl_runtime_apis! {
 	impl sp_api::Core<Block> for Runtime {
 		fn version() -> RuntimeVersion {
@@ -2171,7 +2229,7 @@ impl_runtime_apis! {
 			Executive::execute_block(block)
 		}
 
-		fn initialize_block(header: &<Block as BlockT>::Header) {
+		fn initialize_block(header: &<Block as BlockT>::Header) -> sp_runtime::ExtrinsicInclusionMode {
 			Executive::initialize_block(header)
 		}
 	}
@@ -2233,7 +2291,7 @@ impl_runtime_apis! {
 		}
 
 		fn authorities() -> Vec<AuraId> {
-			Aura::authorities().into_inner()
+			pallet_aura::Authorities::<Runtime>::get().into_inner()
 		}
 	}
 
@@ -2273,7 +2331,7 @@ impl_runtime_apis! {
 		}
 	}
 
-	impl orml_oracle_rpc_runtime_api::OracleApi<
+	impl orml_oracle_runtime_api::OracleApi<
 		Block,
 		DataProviderId,
 		CurrencyId,
@@ -2294,7 +2352,7 @@ impl_runtime_apis! {
 		}
 	}
 
-	impl orml_tokens_rpc_runtime_api::TokensApi<
+	impl orml_tokens_runtime_api::TokensApi<
 		Block,
 		CurrencyId,
 		Balance,
@@ -2308,7 +2366,18 @@ impl_runtime_apis! {
 		}
 	}
 
-	impl module_evm_rpc_runtime_api::EVMRuntimeRPCApi<Block, Balance> for Runtime {
+	impl module_currencies_runtime_api::CurrenciesApi<
+		Block,
+		CurrencyId,
+		AccountId,
+		Balance,
+	> for Runtime {
+		fn query_free_balance(currency_id: CurrencyId, who: AccountId) -> Balance {
+			Currencies::free_balance(currency_id, &who)
+		}
+	}
+
+	impl module_evm_rpc_runtime_api::EVMRuntimeRPCApi<Block, Balance, AccountId> for Runtime {
 		fn block_limits() -> BlockLimits {
 			BlockLimits {
 				max_gas_limit: runtime_common::EvmLimits::<Runtime>::max_gas_limit(),
@@ -2316,6 +2385,8 @@ impl_runtime_apis! {
 			}
 		}
 
+		// required by xtokens precompile
+		#[transactional]
 		fn call(
 			from: H160,
 			to: H160,
@@ -2326,20 +2397,17 @@ impl_runtime_apis! {
 			access_list: Option<Vec<AccessListItem>>,
 			_estimate: bool,
 		) -> Result<CallInfo, sp_runtime::DispatchError> {
-			// Fix xtokens: Transfer failed: Transactional(NoLayer)
-			simulate_execution(|| {
-				<Runtime as module_evm::Config>::Runner::rpc_call(
-					from,
-					from,
-					to,
-					data,
-					value,
-					gas_limit,
-					storage_limit,
-					access_list.unwrap_or_default().into_iter().map(|v| (v.address, v.storage_keys)).collect(),
-					<Runtime as module_evm::Config>::config(),
-				)
-			})
+			<Runtime as module_evm::Config>::Runner::rpc_call(
+				from,
+				from,
+				to,
+				data,
+				value,
+				gas_limit,
+				storage_limit,
+				access_list.unwrap_or_default().into_iter().map(|v| (v.address, v.storage_keys)).collect(),
+				<Runtime as module_evm::Config>::config(),
+			)
 		}
 
 		fn create(
@@ -2394,6 +2462,50 @@ impl_runtime_apis! {
 
 			request.ok_or(sp_runtime::DispatchError::Other("Invalid parameter extrinsic, not evm Call"))
 		}
+
+		// required by xtokens precompile
+		#[transactional]
+		fn account_call(
+			from: AccountId,
+			to: H160,
+			data: Vec<u8>,
+			value: Balance,
+			gas_limit: u64,
+			storage_limit: u32,
+			access_list: Option<Vec<AccessListItem>>,
+			estimate: bool,
+		) -> Result<CallInfo, sp_runtime::DispatchError> {
+			let from = EvmAddressMapping::<Runtime>::get_or_create_evm_address(&from);
+
+			Self::call(from, to, data, value, gas_limit, storage_limit, access_list, estimate)
+		}
+
+		fn account_create(
+			from: AccountId,
+			data: Vec<u8>,
+			value: Balance,
+			gas_limit: u64,
+			storage_limit: u32,
+			access_list: Option<Vec<AccessListItem>>,
+			estimate: bool,
+		) -> Result<CreateInfo, sp_runtime::DispatchError> {
+			let from = EvmAddressMapping::<Runtime>::get_or_create_evm_address(&from);
+
+			Self::create(from, data, value, gas_limit, storage_limit, access_list, estimate)
+		}
+	}
+
+	#[cfg(feature = "tracing")]
+	impl module_evm_rpc_runtime_api::EVMTraceApi<Block> for Runtime {
+		fn trace_extrinsic(
+			extrinsic: <Block as BlockT>::Extrinsic,
+			tracer_config: primitives::evm::tracing::TracerConfig,
+		) -> Result<module_evm::runner::tracing::TraceOutcome, sp_runtime::transaction_validity::TransactionValidityError> {
+			let mut tracer = module_evm::runner::tracing::Tracer::new(tracer_config);
+			module_evm::runner::tracing::using(&mut tracer, || {
+				Executive::apply_extrinsic(extrinsic)
+			}).map(|_| tracer.finalize())
+		}
 	}
 
 	impl cumulus_primitives_core::CollectCollationInfo<Block> for Runtime {
@@ -2439,6 +2551,7 @@ impl_runtime_apis! {
 			use frame_support::traits::StorageInfoTrait;
 
 			use module_nft::benchmarking::Pallet as NftBench;
+			// use pallet_xcm::benchmarking::Pallet as PalletXcmExtrinsicsBenchmark;
 
 			let mut list = Vec::<BenchmarkList>::new();
 
@@ -2453,10 +2566,87 @@ impl_runtime_apis! {
 		fn dispatch_benchmark(
 			config: frame_benchmarking::BenchmarkConfig
 		) -> Result<Vec<frame_benchmarking::BenchmarkBatch>, sp_runtime::RuntimeString> {
-			use frame_benchmarking::{Benchmarking, BenchmarkBatch, add_benchmark as frame_add_benchmark, TrackedStorageKey};
+			use frame_benchmarking::{Benchmarking, BenchmarkBatch, BenchmarkError, add_benchmark as frame_add_benchmark};
 			use module_nft::benchmarking::Pallet as NftBench;
+			use frame_support::traits::{WhitelistedStorageKeys, TrackedStorageKey};
 
-			use frame_support::traits::WhitelistedStorageKeys;
+			// const UNITS: Balance = 1_000_000_000_000;
+			// const CENTS: Balance = UNITS / 100;
+
+			// parameter_types! {
+			// 	pub FeeAssetId: AssetId = AssetId(Location::parent());
+			// 	pub const BaseDeliveryFee: u128 = CENTS.saturating_mul(3);
+			// }
+			// pub type PriceForParentDelivery = polkadot_runtime_common::xcm_sender::ExponentialPrice<
+			// 	FeeAssetId,
+			// 	BaseDeliveryFee,
+			// 	TransactionByteFee,
+			// 	ParachainSystem,
+			// >;
+
+			// use pallet_xcm::benchmarking::Pallet as PalletXcmExtrinsicsBenchmark;
+			// impl pallet_xcm::benchmarking::Config for Runtime {
+			// 	type DeliveryHelper = cumulus_primitives_utility::ToParentDeliveryHelper<
+			// 		xcm_config::XcmConfig,
+			// 		ExistentialDepositAsset,
+			// 		PriceForParentDelivery,
+			// 	>;
+			// 	fn reachable_dest() -> Option<Location> {
+			// 		Some(Parent.into())
+			// 	}
+
+			// 	fn teleportable_asset_and_dest() -> Option<(Asset, Location)> {
+			// 		Some((
+			// 			Asset {
+			// 				fun: Fungible(NativeTokenExistentialDeposit::get()),
+			// 				id: AssetId(Parent.into())
+			// 			},
+			// 			Parent.into(),
+			// 		))
+			// 	}
+
+			// 	fn reserve_transferable_asset_and_dest() -> Option<(Asset, Location)> {
+			// 		None
+			// 	}
+
+			// 	fn get_asset() -> Asset {
+			// 		Asset {
+			// 			id: AssetId(Location::parent()),
+			// 			fun: Fungible(UNITS),
+			// 		}
+			// 	}
+			// }
+
+			// parameter_types! {
+			// 	pub ExistentialDepositAsset: Option<Asset> = Some((
+			// 		Location::parent(),
+			// 		NativeTokenExistentialDeposit::get()
+			// 	).into());
+			// }
+
+			// impl pallet_xcm_benchmarks::Config for Runtime {
+			// 	type XcmConfig = xcm_config::XcmConfig;
+			// 	type AccountIdConverter = xcm_config::LocationToAccountId;
+			// 	type DeliveryHelper = cumulus_primitives_utility::ToParentDeliveryHelper<
+			// 		xcm_config::XcmConfig,
+			// 		ExistentialDepositAsset,
+			// 		PriceForParentDelivery,
+			// 	>;
+			// 	fn valid_destination() -> Result<Location, BenchmarkError> {
+			// 		Ok(Location::parent())
+			// 	}
+			// 	fn worst_case_holding(_depositable_count: u32) -> Assets {
+			// 		// just concrete assets according to relay chain.
+			// 		let assets: Vec<Asset> = vec![
+			// 			Asset {
+			// 				id: AssetId(Location::parent()),
+			// 				fun: Fungible(1_000_000 * UNITS),
+			// 			}
+			// 		];
+			// 		assets.into()
+			// 	}
+			// }
+
 			let mut whitelist: Vec<TrackedStorageKey> = AllPalletsWithSystem::whitelisted_storage_keys();
 
 			// Treasury Account
@@ -2475,27 +2665,20 @@ impl_runtime_apis! {
 			Ok(batches)
 		}
 	}
-}
 
-struct CheckInherents;
+	#[cfg(feature = "genesis-builder")]
+	impl sp_genesis_builder::GenesisBuilder<Block> for Runtime {
+		fn build_state(config: Vec<u8>) -> sp_genesis_builder::Result {
+			frame_support::genesis_builder_helper::build_state::<RuntimeGenesisConfig>(config)
+		}
 
-impl cumulus_pallet_parachain_system::CheckInherents<Block> for CheckInherents {
-	fn check_inherents(
-		block: &Block,
-		relay_state_proof: &cumulus_pallet_parachain_system::RelayChainStateProof,
-	) -> sp_inherents::CheckInherentsResult {
-		let relay_chain_slot = relay_state_proof
-			.read_slot()
-			.expect("Could not read the relay chain slot from the proof");
+		fn get_preset(id: &Option<sp_genesis_builder::PresetId>) -> Option<Vec<u8>> {
+			frame_support::genesis_builder_helper::get_preset::<RuntimeGenesisConfig>(id, |_| None)
+		}
 
-		let inherent_data = cumulus_primitives_timestamp::InherentDataProvider::from_relay_chain_slot_and_duration(
-			relay_chain_slot,
-			sp_std::time::Duration::from_secs(6),
-		)
-		.create_inherent_data()
-		.expect("Could not create the timestamp inherent data");
-
-		inherent_data.check_extrinsics(block)
+		fn preset_names() -> Vec<sp_genesis_builder::PresetId> {
+			vec![]
+		}
 	}
 }
 
@@ -2503,7 +2686,6 @@ impl cumulus_pallet_parachain_system::CheckInherents<Block> for CheckInherents {
 cumulus_pallet_parachain_system::register_validate_block!(
 	Runtime = Runtime,
 	BlockExecutor = cumulus_pallet_aura_ext::BlockExecutor::<Runtime, Executive>,
-	CheckInherents = CheckInherents,
 );
 
 #[cfg(test)]
@@ -2511,7 +2693,6 @@ mod tests {
 	use super::*;
 	use frame_support::{dispatch::DispatchInfo, traits::WhitelistedStorageKeys};
 	use frame_system::offchain::CreateSignedTransaction;
-	use module_support::AddressMapping;
 	use sp_core::hexdisplay::HexDisplay;
 	use sp_runtime::traits::SignedExtension;
 	use std::collections::HashSet;
@@ -2683,76 +2864,6 @@ mod tests {
 					propagate: true,
 				})
 			);
-		});
-	}
-
-	fn new_test_ext() -> sp_io::TestExternalities {
-		let t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
-			.unwrap();
-		let mut ext = sp_io::TestExternalities::new(t);
-		ext.execute_with(|| System::set_block_number(1));
-		ext
-	}
-
-	#[test]
-	fn payer_signature_verify() {
-		use sp_core::Pair;
-
-		let extra: SignedExtra = (
-			frame_system::CheckNonZeroSender::<Runtime>::new(),
-			frame_system::CheckSpecVersion::<Runtime>::new(),
-			frame_system::CheckTxVersion::<Runtime>::new(),
-			frame_system::CheckGenesis::<Runtime>::new(),
-			frame_system::CheckEra::<Runtime>::from(generic::Era::Immortal),
-			runtime_common::CheckNonce::<Runtime>::from(0),
-			frame_system::CheckWeight::<Runtime>::new(),
-			module_evm::SetEvmOrigin::<Runtime>::new(),
-			module_transaction_payment::ChargeTransactionPayment::<Runtime>::from(0),
-		);
-
-		// correct payer signature
-		new_test_ext().execute_with(|| {
-			let payer = sp_keyring::AccountKeyring::Charlie;
-
-			let call = RuntimeCall::Balances(pallet_balances::Call::transfer {
-				dest: sp_runtime::MultiAddress::Id(sp_keyring::AccountKeyring::Bob.to_account_id()),
-				value: 100,
-			});
-
-			let raw_payload = SignedPayload::new(call.clone(), extra.clone()).unwrap();
-			let payer_signature = raw_payload.using_encoded(|payload| payer.pair().sign(payload));
-
-			let fee_call = RuntimeCall::TransactionPayment(module_transaction_payment::Call::with_fee_paid_by {
-				call: Box::new(call),
-				payer_addr: payer.to_account_id(),
-				payer_sig: sp_runtime::MultiSignature::Sr25519(payer_signature),
-			});
-			assert!(PayerSignatureVerification::convert((fee_call, extra.clone())).is_ok());
-		});
-
-		// wrong payer signature
-		new_test_ext().execute_with(|| {
-			let hacker = sp_keyring::AccountKeyring::Dave;
-
-			let call = RuntimeCall::Balances(pallet_balances::Call::transfer {
-				dest: sp_runtime::MultiAddress::Id(sp_keyring::AccountKeyring::Bob.to_account_id()),
-				value: 100,
-			});
-			let hacker_call = RuntimeCall::Balances(pallet_balances::Call::transfer {
-				dest: sp_runtime::MultiAddress::Id(sp_keyring::AccountKeyring::Dave.to_account_id()),
-				value: 100,
-			});
-
-			let raw_payload = SignedPayload::new(hacker_call.clone(), extra.clone()).unwrap();
-			let payer_signature = raw_payload.using_encoded(|payload| hacker.pair().sign(payload));
-
-			let fee_call = RuntimeCall::TransactionPayment(module_transaction_payment::Call::with_fee_paid_by {
-				call: Box::new(call),
-				payer_addr: hacker.to_account_id(),
-				payer_sig: sp_runtime::MultiSignature::Sr25519(payer_signature),
-			});
-			assert!(PayerSignatureVerification::convert((fee_call, extra)).is_err());
 		});
 	}
 }

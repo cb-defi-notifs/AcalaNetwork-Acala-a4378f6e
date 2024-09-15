@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -62,6 +62,9 @@ pub mod evm_accounts {
 pub mod homa {
 	include!("../../../mandala/src/benchmarking/homa.rs");
 }
+pub mod homa_validator_list {
+	include!("../../../mandala/src/benchmarking/homa_validator_list.rs");
+}
 pub mod honzon {
 	include!("../../../mandala/src/benchmarking/honzon.rs");
 }
@@ -93,6 +96,9 @@ pub mod nutsfinance_stable_asset {
 pub mod aggregated_dex {
 	include!("../../../mandala/src/benchmarking/aggregated_dex.rs");
 }
+pub mod nominees_election {
+	include!("../../../mandala/src/benchmarking/nominees_election.rs");
+}
 
 // orml benchmarking
 pub mod auction {
@@ -100,9 +106,6 @@ pub mod auction {
 }
 pub mod authority {
 	include!("../../../mandala/src/benchmarking/authority.rs");
-}
-pub mod oracle {
-	include!("../../../mandala/src/benchmarking/oracle.rs");
 }
 pub mod tokens {
 	include!("../../../mandala/src/benchmarking/tokens.rs");

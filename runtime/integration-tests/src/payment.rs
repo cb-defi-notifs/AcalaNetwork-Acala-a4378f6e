@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,14 +18,16 @@
 
 use crate::setup::*;
 use crate::stable_asset::enable_stable_asset;
-use frame_support::dispatch::{DispatchClass, DispatchInfo, Pays, PostDispatchInfo, Weight};
+use frame_support::{
+	dispatch::{DispatchClass, DispatchInfo, Pays, PostDispatchInfo},
+	weights::Weight,
+};
 use module_support::AggregatedSwapPath;
 use sp_runtime::{
 	traits::{AccountIdConversion, SignedExtension, UniqueSaturatedInto},
 	transaction_validity::{InvalidTransaction, TransactionValidityError},
 	MultiAddress, Percent,
 };
-use xcm_executor::{traits::*, Assets, Config};
 
 fn fee_pool_size() -> Balance {
 	5 * dollar(NATIVE_CURRENCY)
@@ -220,64 +222,6 @@ fn initial_charge_fee_pool_works() {
 }
 
 #[test]
-fn trader_works() {
-	// 4 instructions, each instruction cost 200_000_000
-	let mut message = Xcm(vec![
-		ReserveAssetDeposited((Parent, 100).into()),
-		ClearOrigin,
-		BuyExecution {
-			fees: (Parent, 100).into(),
-			weight_limit: Limited(Weight::from_parts(100, 0)),
-		},
-		DepositAsset {
-			assets: AllCounted(1).into(),
-			beneficiary: Here.into(),
-		},
-	]);
-
-	let total_balance: Balance = 1_000_000_000;
-	let asset: MultiAsset = (Parent, total_balance).into();
-	let assets: Assets = asset.into();
-
-	let expect_unspent: MultiAsset = (Parent, total_balance - crate::relaychain::relay_per_second_as_fee(4)).into();
-	let xcm_weight: XcmWeight = <XcmConfig as Config>::Weigher::weight(&mut message).unwrap();
-
-	ExtBuilder::default().build().execute_with(|| {
-		let mut trader = Trader::new();
-		let result_assets = trader.buy_weight(xcm_weight, assets.clone()).unwrap();
-		let unspent: Vec<MultiAsset> = result_assets.into();
-		assert_eq!(vec![expect_unspent.clone()], unspent);
-
-		let mut period_trader = TransactionFeePoolTrader::new();
-		let result_assets = period_trader.buy_weight(xcm_weight, assets.clone());
-		assert!(result_assets.is_err());
-	});
-
-	ExtBuilder::default().build().execute_with(|| {
-		assert_ok!(add_liquidity(
-			RELAY_CHAIN_CURRENCY,
-			NATIVE_CURRENCY,
-			100 * dollar(RELAY_CHAIN_CURRENCY),
-			10000 * dollar(NATIVE_CURRENCY)
-		));
-
-		assert_ok!(init_charge_fee_pool(RELAY_CHAIN_CURRENCY));
-
-		let relay_exchange_rate: Ratio =
-			module_transaction_payment::Pallet::<Runtime>::token_exchange_rate(RELAY_CHAIN_CURRENCY).unwrap();
-
-		let spent = crate::relaychain::token_per_second_as_fee(4, relay_exchange_rate);
-		let expect_unspent: MultiAsset = (Parent, total_balance - spent as u128).into();
-
-		// the newly `TransactionFeePoolTrader` works fine as first priority
-		let mut period_trader = TransactionFeePoolTrader::new();
-		let result_assets = period_trader.buy_weight(xcm_weight, assets);
-		let unspent: Vec<MultiAsset> = result_assets.unwrap().into();
-		assert_eq!(vec![expect_unspent.clone()], unspent);
-	});
-}
-
-#[test]
 fn charge_transaction_payment_and_threshold_works() {
 	let native_ed = NativeTokenExistentialDeposit::get();
 	let pool_size = fee_pool_size();
@@ -428,15 +372,27 @@ fn charge_transaction_payment_and_threshold_works() {
 
 #[test]
 fn with_fee_currency_call_works() {
-	with_fee_call_works(with_fee_currency_call(LIQUID_CURRENCY), false);
+	let amount = with_fee_call_works(with_fee_currency_call(LIQUID_CURRENCY), false);
+	#[cfg(feature = "with-mandala-runtime")]
+	assert_debug_snapshot!(amount, @"12701470465");
+	#[cfg(feature = "with-karura-runtime")]
+	assert_debug_snapshot!(amount, @"12726949844");
+	#[cfg(feature = "with-acala-runtime")]
+	assert_debug_snapshot!(amount, @"12726949844");
 }
 
 #[test]
 fn with_fee_path_call_works() {
-	with_fee_call_works(
+	let amount = with_fee_call_works(
 		with_fee_path_call(vec![LIQUID_CURRENCY, USD_CURRENCY, NATIVE_CURRENCY]),
 		false,
 	);
+	#[cfg(feature = "with-mandala-runtime")]
+	assert_debug_snapshot!(amount, @"12701470465");
+	#[cfg(feature = "with-karura-runtime")]
+	assert_debug_snapshot!(amount, @"12726949844");
+	#[cfg(feature = "with-acala-runtime")]
+	assert_debug_snapshot!(amount, @"12726949844");
 }
 
 #[test]
@@ -445,16 +401,22 @@ fn with_fee_aggregated_path_call_works() {
 		AggregatedSwapPath::<CurrencyId>::Taiga(0, 0, 1),
 		AggregatedSwapPath::<CurrencyId>::Dex(vec![LIQUID_CURRENCY, USD_CURRENCY, NATIVE_CURRENCY]),
 	];
-	with_fee_call_works(with_fee_aggregated_path_call(aggregated_path), true);
+	let amount = with_fee_call_works(with_fee_aggregated_path_call(aggregated_path), true);
+	#[cfg(feature = "with-mandala-runtime")]
+	assert_debug_snapshot!(amount, @"12701470465");
+	#[cfg(feature = "with-karura-runtime")]
+	assert_debug_snapshot!(amount, @"12726949844");
+	#[cfg(feature = "with-acala-runtime")]
+	assert_debug_snapshot!(amount, @"12726949844");
 }
 
 fn with_fee_call_works(
 	with_fee_call: <Runtime as module_transaction_payment::Config>::RuntimeCall,
 	is_aggregated_call: bool,
-) {
+) -> Balance {
 	let init_amount = 100 * dollar(LIQUID_CURRENCY);
 	let ausd_acc: AccountId = TransactionPaymentPalletId::get().into_sub_account_truncating(USD_CURRENCY);
-	ExtBuilder::default()
+	return ExtBuilder::default()
 		.balances(vec![
 			// ALICE for stable asset, BOB and CHARLIE for transaction payment
 			(
@@ -550,18 +512,29 @@ fn with_fee_call_works(
 					50
 				)
 			);
-			#[cfg(feature = "with-karura-runtime")]
-			let amount = 12_726_949_837u128;
-			#[cfg(feature = "with-acala-runtime")]
-			let amount = 12_726_949_837u128;
-			#[cfg(feature = "with-mandala-runtime")]
-			let amount = 12_701_470_458u128;
 
-			System::assert_has_event(RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
-				currency_id: USD_CURRENCY,
-				from: AccountId::from(CHARLIE),
-				to: ausd_acc.clone(),
-				amount,
-			}));
+			let amount = System::events()
+				.iter()
+				.filter_map(|r| {
+					if let RuntimeEvent::Tokens(orml_tokens::Event::Transfer {
+						ref currency_id,
+						ref from,
+						ref to,
+						amount,
+					}) = r.event
+					{
+						if *currency_id == USD_CURRENCY && *from == AccountId::from(CHARLIE) && *to == ausd_acc {
+							Some(amount)
+						} else {
+							None
+						}
+					} else {
+						None
+					}
+				})
+				.next()
+				.unwrap();
+
+			return amount;
 		});
 }

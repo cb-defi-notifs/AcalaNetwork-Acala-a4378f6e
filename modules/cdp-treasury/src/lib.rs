@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -29,8 +29,9 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::needless_range_loop)]
 
-use frame_support::{log, pallet_prelude::*, transactional, PalletId};
+use frame_support::{pallet_prelude::*, transactional, PalletId};
 use frame_system::pallet_prelude::*;
+use module_support::{AuctionManager, CDPTreasury, CDPTreasuryExtended, DEXManager, Ratio, Swap, SwapLimit};
 use nutsfinance_stable_asset::traits::StableAsset;
 use nutsfinance_stable_asset::RedeemProportionResult;
 use orml_traits::{MultiCurrency, MultiCurrencyExtended};
@@ -40,7 +41,6 @@ use sp_runtime::{
 	ArithmeticError, DispatchError, DispatchResult, FixedPointNumber,
 };
 use sp_std::prelude::*;
-use support::{AuctionManager, CDPTreasury, CDPTreasuryExtended, DEXManager, Ratio, Swap, SwapLimit};
 
 mod mock;
 mod tests;
@@ -82,7 +82,7 @@ pub mod module {
 			AtLeast64BitUnsigned = Balance,
 			Balance = Balance,
 			AccountId = Self::AccountId,
-			BlockNumber = Self::BlockNumber,
+			BlockNumber = BlockNumberFor<Self>,
 		>;
 
 		/// The cap of lots number when create collateral auction on a
@@ -154,13 +154,14 @@ pub mod module {
 	pub type DebitOffsetBuffer<T: Config> = StorageValue<_, Balance, ValueQuery>;
 
 	#[pallet::genesis_config]
-	#[cfg_attr(feature = "std", derive(Default))]
-	pub struct GenesisConfig {
+	#[derive(frame_support::DefaultNoBound)]
+	pub struct GenesisConfig<T> {
 		pub expected_collateral_auction_size: Vec<(CurrencyId, Balance)>,
+		pub _phantom: sp_std::marker::PhantomData<T>,
 	}
 
 	#[pallet::genesis_build]
-	impl<T: Config> GenesisBuild<T> for GenesisConfig {
+	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
 		fn build(&self) {
 			self.expected_collateral_auction_size
 				.iter()
@@ -174,9 +175,9 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		/// Handle excessive surplus or debits of system when block end
-		fn on_finalize(_now: T::BlockNumber) {
+		fn on_finalize(_now: BlockNumberFor<T>) {
 			// offset the same amount between debit pool and surplus pool
 			Self::offset_surplus_and_debit();
 		}
@@ -186,7 +187,6 @@ pub mod module {
 	impl<T: Config> Pallet<T> {
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::extract_surplus_to_treasury())]
-		#[transactional]
 		pub fn extract_surplus_to_treasury(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			T::UpdateOrigin::ensure_origin(origin)?;
 			T::Currency::transfer(
@@ -214,7 +214,6 @@ pub mod module {
 				T::WeightInfo::auction_collateral(1)
 			}
 		)]
-		#[transactional]
 		pub fn auction_collateral(
 			origin: OriginFor<T>,
 			currency_id: CurrencyId,
@@ -241,7 +240,6 @@ pub mod module {
 		/// - `swap_limit`: target amount
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::exchange_collateral_to_stable())]
-		#[transactional]
 		pub fn exchange_collateral_to_stable(
 			origin: OriginFor<T>,
 			currency_id: CurrencyId,
@@ -262,7 +260,6 @@ pub mod module {
 		/// - `amount`: expected size of per lot collateral auction
 		#[pallet::call_index(3)]
 		#[pallet::weight((T::WeightInfo::set_expected_collateral_auction_size(), DispatchClass::Operational))]
-		#[transactional]
 		pub fn set_expected_collateral_auction_size(
 			origin: OriginFor<T>,
 			currency_id: CurrencyId,
@@ -284,7 +281,6 @@ pub mod module {
 		/// - `amount`: the buffer amount of debit pool
 		#[pallet::call_index(4)]
 		#[pallet::weight((T::WeightInfo::set_expected_collateral_auction_size(), DispatchClass::Operational))]
-		#[transactional]
 		pub fn set_debit_offset_buffer(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			T::UpdateOrigin::ensure_origin(origin)?;
 			DebitOffsetBuffer::<T>::mutate(|v| {

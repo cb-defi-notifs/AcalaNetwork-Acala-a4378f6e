@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -221,12 +221,12 @@ fn test_trading_pair() {
 			assert_ok!(AssetRegistry::register_foreign_asset(
 				RuntimeOrigin::root(),
 				Box::new(
-					MultiLocation::new(
+					Location::new(
 						1,
-						X2(
+						[
 							Parachain(2002),
 							Junction::from(BoundedVec::try_from(KAR.encode()).unwrap())
-						)
+						]
 					)
 					.into()
 				),

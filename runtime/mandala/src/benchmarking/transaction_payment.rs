@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -223,13 +223,6 @@ runtime_benchmarks! {
 			AggregatedSwapPath::<CurrencyId>::Dex(vec![LIQUID, NATIVE]),
 		];
 	}: _(RawOrigin::Signed(caller.clone()), fee_aggregated_path, call)
-
-	with_fee_paid_by {
-		let caller: AccountId = whitelisted_caller();
-		let payer: AccountId = account("payer", 0, SEED);
-		let call = Box::new(frame_system::Call::remark { remark: vec![] }.into());
-		let signature = sp_runtime::MultiSignature::Sr25519(sp_core::sr25519::Signature([0u8; 64]));
-	}: _(RawOrigin::Signed(caller.clone()), call, payer, signature)
 
 	on_finalize {
 	}: {

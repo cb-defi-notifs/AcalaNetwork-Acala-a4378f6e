@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -30,7 +30,7 @@ use frame_support::{
 		ExistenceRequirement::{AllowDeath, KeepAlive},
 		NamedReservableCurrency,
 	},
-	transactional, PalletId,
+	PalletId,
 };
 use frame_system::pallet_prelude::*;
 use orml_traits::InspectExtended;
@@ -40,7 +40,6 @@ use primitives::{
 };
 use scale_info::TypeInfo;
 
-#[cfg(feature = "std")]
 use serde::{Deserialize, Serialize};
 use sp_runtime::{
 	traits::{AccountIdConversion, Hash, Saturating, StaticLookup, Zero},
@@ -56,8 +55,7 @@ pub mod weights;
 pub use module::*;
 pub use weights::WeightInfo;
 
-#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq, Eq, TypeInfo)]
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq, Eq, TypeInfo, Serialize, Deserialize)]
 pub struct ClassData<Balance> {
 	/// Deposit reserved to create token class
 	pub deposit: Balance,
@@ -67,8 +65,7 @@ pub struct ClassData<Balance> {
 	pub attributes: Attributes,
 }
 
-#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq, Eq, TypeInfo)]
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Encode, Decode, Clone, RuntimeDebug, PartialEq, Eq, TypeInfo, Serialize, Deserialize)]
 pub struct TokenData<Balance> {
 	/// Deposit reserved to create token
 	pub deposit: Balance,
@@ -199,9 +196,6 @@ pub mod module {
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
-	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
-
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Create NFT class, tokens belong to the class.
@@ -210,7 +204,6 @@ pub mod module {
 		/// - `properties`: class property, include `Transferable` `Burnable`
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as Config>::WeightInfo::create_class())]
-		#[transactional]
 		pub fn create_class(
 			origin: OriginFor<T>,
 			metadata: CID,
@@ -266,7 +259,6 @@ pub mod module {
 		/// - `quantity`: token quantity
 		#[pallet::call_index(1)]
 		#[pallet::weight(<T as Config>::WeightInfo::mint(*quantity))]
-		#[transactional]
 		pub fn mint(
 			origin: OriginFor<T>,
 			to: <T::Lookup as StaticLookup>::Source,
@@ -287,7 +279,6 @@ pub mod module {
 		/// - `token`: (class_id, token_id)
 		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::transfer())]
-		#[transactional]
 		pub fn transfer(
 			origin: OriginFor<T>,
 			to: <T::Lookup as StaticLookup>::Source,
@@ -303,7 +294,6 @@ pub mod module {
 		/// - `token`: (class_id, token_id)
 		#[pallet::call_index(3)]
 		#[pallet::weight(<T as Config>::WeightInfo::burn())]
-		#[transactional]
 		pub fn burn(origin: OriginFor<T>, token: (ClassIdOf<T>, TokenIdOf<T>)) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			Self::do_burn(who, token, None)
@@ -315,7 +305,6 @@ pub mod module {
 		/// - `remark`: Vec<u8>
 		#[pallet::call_index(4)]
 		#[pallet::weight(<T as Config>::WeightInfo::burn_with_remark(remark.len() as u32))]
-		#[transactional]
 		pub fn burn_with_remark(
 			origin: OriginFor<T>,
 			token: (ClassIdOf<T>, TokenIdOf<T>),
@@ -332,7 +321,6 @@ pub mod module {
 		/// - `dest`: The proxy account that will receive free balance
 		#[pallet::call_index(5)]
 		#[pallet::weight(<T as Config>::WeightInfo::destroy_class())]
-		#[transactional]
 		pub fn destroy_class(
 			origin: OriginFor<T>,
 			class_id: ClassIdOf<T>,
@@ -374,7 +362,6 @@ pub mod module {
 		/// - `properties`: The new properties
 		#[pallet::call_index(6)]
 		#[pallet::weight(<T as Config>::WeightInfo::update_class_properties())]
-		#[transactional]
 		pub fn update_class_properties(
 			origin: OriginFor<T>,
 			class_id: ClassIdOf<T>,
@@ -385,7 +372,7 @@ pub mod module {
 				let class_info = class_info.as_mut().ok_or(Error::<T>::ClassIdNotFound)?;
 				ensure!(who == class_info.owner, Error::<T>::NoPermission);
 
-				let mut data = &mut class_info.data;
+				let data = &mut class_info.data;
 				ensure!(
 					data.properties.0.contains(ClassProperty::ClassPropertiesMutable),
 					Error::<T>::Immutable
@@ -401,7 +388,7 @@ pub mod module {
 
 impl<T: Config> Pallet<T> {
 	#[require_transactional]
-	fn do_transfer(from: &T::AccountId, to: &T::AccountId, token: (ClassIdOf<T>, TokenIdOf<T>)) -> DispatchResult {
+	pub fn do_transfer(from: &T::AccountId, to: &T::AccountId, token: (ClassIdOf<T>, TokenIdOf<T>)) -> DispatchResult {
 		let class_info = orml_nft::Pallet::<T>::classes(token.0).ok_or(Error::<T>::ClassIdNotFound)?;
 		let data = class_info.data;
 		ensure!(

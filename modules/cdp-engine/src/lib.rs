@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -28,14 +28,19 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::upper_case_acronyms)]
 
-use codec::MaxEncodedLen;
-use frame_support::{log, pallet_prelude::*, traits::UnixTime, transactional, BoundedVec, PalletId};
+use frame_support::{pallet_prelude::*, traits::UnixTime, transactional, BoundedVec, PalletId};
 use frame_system::{
 	offchain::{SendTransactionTypes, SubmitTransaction},
 	pallet_prelude::*,
 };
+use module_support::{
+	AddressMapping, CDPTreasury, CDPTreasuryExtended, DEXManager, EVMBridge, EmergencyShutdown, ExchangeRate,
+	FractionalRate, InvokeContext, LiquidateCollateral, LiquidationEvmBridge, Price, PriceProvider, Rate, Ratio,
+	RiskManager, Swap, SwapLimit,
+};
 use orml_traits::{Change, GetByKey, MultiCurrency};
 use orml_utilities::OffchainErr;
+use parity_scale_codec::MaxEncodedLen;
 use primitives::{evm::EvmAddress, Amount, Balance, CurrencyId, Position};
 use rand_chacha::{
 	rand_core::{RngCore, SeedableRng},
@@ -57,11 +62,6 @@ use sp_runtime::{
 	ArithmeticError, DispatchError, DispatchResult, FixedPointNumber, RuntimeDebug,
 };
 use sp_std::{marker::PhantomData, prelude::*};
-use support::{
-	AddressMapping, CDPTreasury, CDPTreasuryExtended, DEXManager, EmergencyShutdown, ExchangeRate, FractionalRate,
-	InvokeContext, LiquidateCollateral, LiquidationEvmBridge, Price, PriceProvider, Rate, Ratio, RiskManager, Swap,
-	SwapLimit,
-};
 
 mod mock;
 mod tests;
@@ -76,7 +76,7 @@ pub const OFFCHAIN_WORKER_MAX_ITERATIONS: &[u8] = b"acala/cdp-engine/max-iterati
 pub const LOCK_DURATION: u64 = 100;
 pub const DEFAULT_MAX_ITERATIONS: u32 = 1000;
 
-pub type LoansOf<T> = loans::Pallet<T>;
+pub type LoansOf<T> = module_loans::Pallet<T>;
 pub type CurrencyOf<T> = <T as Config>::Currency;
 
 /// Risk management params
@@ -125,7 +125,7 @@ pub mod module {
 	use super::*;
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config + loans::Config + SendTransactionTypes<Call<Self>> {
+	pub trait Config: frame_system::Config + module_loans::Config + SendTransactionTypes<Call<Self>> {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The origin which may update risk management parameters. Root can
@@ -207,6 +207,12 @@ pub mod module {
 		type PalletId: Get<PalletId>;
 
 		type EvmAddressMapping: AddressMapping<Self::AccountId>;
+
+		/// Evm Bridge for getting info of contracts from the EVM.
+		type EVMBridge: EVMBridge<Self::AccountId, Balance>;
+
+		/// Evm Origin account when settle erc20 type CDP
+		type SettleErc20EvmOrigin: Get<Self::AccountId>;
 
 		/// Weight information for the extrinsics in this module.
 		type WeightInfo: WeightInfo;
@@ -339,8 +345,8 @@ pub mod module {
 		StorageValue<_, BoundedVec<EvmAddress, T::MaxLiquidationContracts>, ValueQuery>;
 
 	#[pallet::genesis_config]
-	#[cfg_attr(feature = "std", derive(Default))]
-	pub struct GenesisConfig {
+	#[derive(frame_support::DefaultNoBound)]
+	pub struct GenesisConfig<T> {
 		#[allow(clippy::type_complexity)]
 		pub collaterals_params: Vec<(
 			CurrencyId,
@@ -350,10 +356,11 @@ pub mod module {
 			Option<Ratio>,
 			Balance,
 		)>,
+		pub _phantom: PhantomData<T>,
 	}
 
 	#[pallet::genesis_build]
-	impl<T: Config> GenesisBuild<T> for GenesisConfig {
+	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
 		fn build(&self) {
 			self.collaterals_params.iter().for_each(
 				|(
@@ -385,10 +392,10 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		/// Issue interest in stable currency for all types of collateral has
 		/// debit when block end, and update their debit exchange rate
-		fn on_initialize(now: T::BlockNumber) -> Weight {
+		fn on_initialize(now: BlockNumberFor<T>) -> Weight {
 			// only after the block #1, `T::UnixTime::now()` will not report error.
 			// https://github.com/paritytech/substrate/blob/4ff92f10058cfe1b379362673dd369e33a919e66/frame/timestamp/src/lib.rs#L276
 			// so accumulate interest at the beginning of the block #2
@@ -405,7 +412,7 @@ pub mod module {
 
 		/// Runs after every block. Start offchain worker to check CDP and
 		/// submit unsigned tx to trigger liquidation or settlement.
-		fn offchain_worker(now: T::BlockNumber) {
+		fn offchain_worker(now: BlockNumberFor<T>) {
 			if let Err(e) = Self::_offchain_worker() {
 				log::info!(
 					target: "cdp-engine offchain worker",
@@ -433,7 +440,6 @@ pub mod module {
 		/// - `who`: CDP's owner.
 		#[pallet::call_index(0)]
 		#[pallet::weight(<T as Config>::WeightInfo::liquidate_by_auction(<T as Config>::CDPTreasury::max_auction()))]
-		#[transactional]
 		pub fn liquidate(
 			origin: OriginFor<T>,
 			currency_id: CurrencyId,
@@ -454,7 +460,6 @@ pub mod module {
 		/// - `who`: CDP's owner.
 		#[pallet::call_index(1)]
 		#[pallet::weight(<T as Config>::WeightInfo::settle())]
-		#[transactional]
 		pub fn settle(
 			origin: OriginFor<T>,
 			currency_id: CurrencyId,
@@ -483,7 +488,6 @@ pub mod module {
 		/// - `maximum_total_debit_value`: maximum total debit value.
 		#[pallet::call_index(2)]
 		#[pallet::weight((<T as Config>::WeightInfo::set_collateral_params(), DispatchClass::Operational))]
-		#[transactional]
 		pub fn set_collateral_params(
 			origin: OriginFor<T>,
 			currency_id: CurrencyId,
@@ -551,7 +555,6 @@ pub mod module {
 
 		#[pallet::call_index(3)]
 		#[pallet::weight(<T as Config>::WeightInfo::register_liquidation_contract())]
-		#[transactional]
 		pub fn register_liquidation_contract(origin: OriginFor<T>, address: EvmAddress) -> DispatchResult {
 			T::LiquidationContractsUpdateOrigin::ensure_origin(origin)?;
 			LiquidationContracts::<T>::try_append(address).map_err(|()| Error::<T>::TooManyLiquidationContracts)?;
@@ -561,7 +564,6 @@ pub mod module {
 
 		#[pallet::call_index(4)]
 		#[pallet::weight(<T as Config>::WeightInfo::deregister_liquidation_contract())]
-		#[transactional]
 		pub fn deregister_liquidation_contract(origin: OriginFor<T>, address: EvmAddress) -> DispatchResult {
 			T::LiquidationContractsUpdateOrigin::ensure_origin(origin)?;
 			LiquidationContracts::<T>::mutate(|contracts| {
@@ -743,10 +745,10 @@ impl<T: Config> Pallet<T> {
 		let is_shutdown = T::EmergencyShutdown::is_shutdown();
 
 		// If start key is Some(value) continue iterating from that point in storage otherwise start
-		// iterating from the beginning of <loans::Positions<T>>
+		// iterating from the beginning of <module_loans::Positions<T>>
 		let mut map_iterator = match start_key.clone() {
-			Some(key) => <loans::Positions<T>>::iter_prefix_from(currency_id, key),
-			None => <loans::Positions<T>>::iter_prefix(currency_id),
+			Some(key) => <module_loans::Positions<T>>::iter_prefix_from(currency_id, key),
+			None => <module_loans::Positions<T>>::iter_prefix(currency_id),
 		};
 
 		let mut finished = true;
@@ -1157,8 +1159,16 @@ impl<T: Config> Pallet<T> {
 		let confiscate_collateral_amount =
 			sp_std::cmp::min(settle_price.saturating_mul_int(bad_debt_value), collateral);
 
+		if let CurrencyId::Erc20(_) = currency_id {
+			T::EVMBridge::set_origin(T::SettleErc20EvmOrigin::get());
+		}
+
 		// confiscate collateral and all debit
 		<LoansOf<T>>::confiscate_collateral_and_debit(&who, currency_id, confiscate_collateral_amount, debit)?;
+
+		if let CurrencyId::Erc20(_) = currency_id {
+			T::EVMBridge::kill_origin();
+		}
 
 		Self::deposit_event(Event::SettleCDPInDebit {
 			collateral_type: currency_id,

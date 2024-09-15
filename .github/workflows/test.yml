@@ -1,5 +1,6 @@
 # generate by yq eval 'explode(.)' test.yml.src > test.yml
 # https://github.com/mikefarah/yq
+
 name: Test
 on:
   pull_request:
@@ -14,23 +15,16 @@ on:
       - release-**
     paths-ignore:
       - '**/README.md'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  clean-up-actions:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Cancel Previous Runs
-        # Only cancel non-master branch runs
-        if: ${{ github.ref != 'refs/heads/master' }}
-        uses: styfle/cancel-workflow-action@0.11.0
-        with:
-          access_token: ${{ github.token }}
   build:
     runs-on: [self-hosted, linux]
     env:
       CARGO_INCREMENTAL: 0
-    needs: clean-up-actions
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: actions/cache@v3
@@ -44,17 +38,13 @@ jobs:
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: nightly-2023-03-04
           components: rustfmt
-          target: wasm32-unknown-unknown
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v1.13
       - name: Check format
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
       - name: Build
         run: make build-all
-      - name: Install clippy
-        run: rustup component add clippy
       - name: Run mandala-runtime clippy
         run: cargo clippy --features with-mandala-runtime -- -D warnings
       - name: Run karura-runtime clippy
@@ -67,9 +57,8 @@ jobs:
     runs-on: [self-hosted, linux]
     env:
       CARGO_INCREMENTAL: 0
-    needs: clean-up-actions
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: actions/cache@v3
@@ -82,10 +71,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2023-03-04
-          components: rustfmt
-          target: wasm32-unknown-unknown
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v1.13
       - name: Run benchmarking tests
@@ -94,9 +81,8 @@ jobs:
     runs-on: [self-hosted, linux]
     env:
       CARGO_INCREMENTAL: 0
-    needs: clean-up-actions
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: actions/cache@v3
@@ -109,10 +95,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2023-03-04
-          components: rustfmt
-          target: wasm32-unknown-unknown
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v1.13
       - name: Run runtime tests
@@ -129,9 +113,8 @@ jobs:
     runs-on: [self-hosted, linux]
     env:
       CARGO_INCREMENTAL: 0
-    needs: clean-up-actions
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
       - uses: actions/cache@v3
@@ -144,18 +127,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2023-03-04
-          components: rustfmt
-          target: wasm32-unknown-unknown
       - name: Setup cmake
         uses: jwlawson/actions-setup-cmake@v1.13
-      - name: Run e2e tests
-        run: make test-e2e
       - name: Use Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 16.x
+          node-version: 18.x
+      - name: Install deps
+        run: cargo install staging-chain-spec-builder
       - name: Run ts tests
         run: |
           npm install -g yarn

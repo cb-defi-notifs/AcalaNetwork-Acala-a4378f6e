@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,16 +22,14 @@
 
 use super::*;
 use frame_support::{
-	construct_runtime, ord_parameter_types, parameter_types,
-	traits::{ConstU32, ConstU64, Everything, Nothing},
+	construct_runtime, derive_impl, ord_parameter_types, parameter_types,
+	traits::{ConstU32, ConstU64, Nothing},
 };
 use frame_system::EnsureSignedBy;
+use module_support::{mocks::MockErc20InfoMapping, SpecificJointsSwap};
 use orml_traits::{parameter_type_with_key, MultiReservableCurrency};
 use primitives::{Amount, TokenSymbol};
-use sp_core::H256;
-use sp_runtime::{testing::Header, traits::IdentityLookup};
-use sp_std::cell::RefCell;
-use support::{mocks::MockErc20InfoMapping, SpecificJointsSwap};
+use sp_runtime::{traits::IdentityLookup, BuildStorage};
 
 pub type BlockNumber = u64;
 pub type AccountId = u128;
@@ -54,31 +52,12 @@ mod dex {
 	pub use super::super::*;
 }
 
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig as frame_system::DefaultConfig)]
 impl frame_system::Config for Runtime {
-	type RuntimeOrigin = RuntimeOrigin;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type RuntimeCall = RuntimeCall;
-	type Hash = H256;
-	type Hashing = ::sp_runtime::traits::BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
-	type RuntimeEvent = RuntimeEvent;
-	type BlockHashCount = ConstU64<250>;
-	type BlockWeights = ();
-	type BlockLength = ();
-	type Version = ();
-	type PalletInfo = PalletInfo;
+	type Block = Block;
 	type AccountData = pallet_balances::AccountData<Balance>;
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type DbWeight = ();
-	type BaseCallFilter = Everything;
-	type SystemWeightInfo = ();
-	type SS58Prefix = ();
-	type OnSetCode = ();
-	type MaxConsumers = ConstU32<16>;
 }
 
 parameter_type_with_key! {
@@ -125,8 +104,8 @@ parameter_types! {
 	];
 }
 
-thread_local! {
-	pub static AUSD_DOT_POOL_RECORD: RefCell<(Balance, Balance)> = RefCell::new((0, 0));
+parameter_types! {
+	pub static AusdDotPoolRecord: (Balance, Balance) = (0, 0);
 }
 
 pub struct MockOnLiquidityPoolUpdated;
@@ -134,7 +113,7 @@ impl Happened<(TradingPair, Balance, Balance)> for MockOnLiquidityPoolUpdated {
 	fn happened(info: &(TradingPair, Balance, Balance)) {
 		let (trading_pair, new_pool_0, new_pool_1) = info;
 		if *trading_pair == AUSDDOTPair::get() {
-			AUSD_DOT_POOL_RECORD.with(|v| *v.borrow_mut() = (*new_pool_0, *new_pool_1));
+			AusdDotPoolRecord::mutate(|v| *v = (*new_pool_0, *new_pool_1));
 		}
 	}
 }
@@ -161,18 +140,13 @@ parameter_types! {
 pub type AUSDJointSwap = SpecificJointsSwap<DexModule, AUSDJoint>;
 pub type ACAJointSwap = SpecificJointsSwap<DexModule, ACAJoint>;
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
 
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
-	{
-		System: frame_system::{Pallet, Call, Storage, Config, Event<T>},
-		DexModule: dex::{Pallet, Storage, Call, Event<T>, Config<T>},
-		Tokens: orml_tokens::{Pallet, Storage, Event<T>, Config<T>},
+	pub enum Runtime {
+		System: frame_system,
+		DexModule: dex,
+		Tokens: orml_tokens,
 	}
 );
 
@@ -222,8 +196,8 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		orml_tokens::GenesisConfig::<Runtime> {

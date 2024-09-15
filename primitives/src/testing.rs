@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -67,6 +67,13 @@ macro_rules! mock_handler {
 			impl $crate::testing::orml_traits::Happened<$t> for $name {
 				fn happened(val: &$t) {
 					Self::push(val.clone());
+				}
+			}
+
+			impl $crate::testing::orml_traits::Handler<$t> for $name {
+				fn handle(val: &$t) -> DispatchResult {
+					Self::push(val.clone());
+					Ok(())
 				}
 			}
 		}

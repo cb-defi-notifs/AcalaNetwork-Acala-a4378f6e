@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -20,13 +20,13 @@ use crate::{
 	currency::{CurrencyId, CurrencyIdType, DexShareType},
 	Balance, BlockNumber, Nonce,
 };
-use codec::{Decode, Encode};
 use core::ops::Range;
 use hex_literal::hex;
 pub use module_evm_utility::{
 	ethereum::{AccessListItem, Log, TransactionAction},
 	evm::ExitReason,
 };
+use parity_scale_codec::{Decode, Encode};
 use scale_info::TypeInfo;
 #[cfg(feature = "std")]
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ const STORAGE_MASK: u64 = 100u64;
 // GAS LIMIT CHUNK
 const GAS_LIMIT_CHUNK: u64 = 30_000u64;
 // MAX GAS_LIMIT CC, log2(BLOCK_STORAGE_LIMIT)
-pub const MAX_GAS_LIMIT_CC: u32 = 21u32;
+pub const MAX_GAS_LIMIT_CC: u32 = 22u32;
 
 #[derive(Clone, Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -73,6 +73,8 @@ pub struct Vicinity {
 	pub block_difficulty: Option<U256>,
 	/// Environmental base fee per gas.
 	pub block_base_fee_per_gas: Option<U256>,
+	/// Environmental randomness.
+	pub block_randomness: Option<H256>,
 }
 
 #[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
@@ -175,7 +177,7 @@ pub const SYSTEM_CONTRACT_ADDRESS_PREFIX: [u8; 9] = [0u8; 9];
 /// Check if the given `address` is a system contract.
 ///
 /// It's system contract if the address starts with SYSTEM_CONTRACT_ADDRESS_PREFIX.
-pub fn is_system_contract(address: EvmAddress) -> bool {
+pub fn is_system_contract(address: &EvmAddress) -> bool {
 	address.as_bytes().starts_with(&SYSTEM_CONTRACT_ADDRESS_PREFIX)
 }
 
@@ -331,3 +333,176 @@ mod convert {
 }
 
 pub use convert::*;
+
+#[cfg(feature = "tracing")]
+pub mod tracing {
+	use module_evm_utility::evm::Opcode;
+	use parity_scale_codec::{Decode, Encode};
+	use scale_info::TypeInfo;
+	use sp_core::{H160, H256, U256};
+	use sp_runtime::RuntimeDebug;
+	use sp_std::vec::Vec;
+
+	#[cfg(feature = "std")]
+	use serde::{Deserialize, Serialize};
+
+	#[derive(Clone, Eq, PartialEq, Default, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	pub enum CallType {
+		#[default]
+		CALL,
+		CALLCODE,
+		STATICCALL,
+		DELEGATECALL,
+		CREATE,
+		SUICIDE,
+	}
+
+	impl From<Opcode> for CallType {
+		fn from(op: Opcode) -> Self {
+			match op {
+				Opcode::CALLCODE => CallType::CALLCODE,
+				Opcode::DELEGATECALL => CallType::DELEGATECALL,
+				Opcode::STATICCALL => CallType::STATICCALL,
+				Opcode::CREATE | Opcode::CREATE2 => CallType::CREATE,
+				Opcode::SUICIDE => CallType::SUICIDE,
+				_ => CallType::CALL,
+			}
+		}
+	}
+
+	impl sp_std::fmt::Display for CallType {
+		fn fmt(&self, f: &mut sp_std::fmt::Formatter<'_>) -> sp_std::fmt::Result {
+			match self {
+				CallType::CALL => write!(f, "CALL"),
+				CallType::CALLCODE => write!(f, "CALLCODE"),
+				CallType::STATICCALL => write!(f, "STATICCALL"),
+				CallType::DELEGATECALL => write!(f, "DELEGATECALL"),
+				CallType::CREATE => write!(f, "CREATE"),
+				CallType::SUICIDE => write!(f, "SUICIDE"),
+			}
+		}
+	}
+
+	#[cfg(feature = "std")]
+	mod maybe_hex {
+		use serde::{Deserialize, Deserializer, Serializer};
+		pub fn serialize<S: Serializer>(data: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error> {
+			if let Some(data) = data {
+				sp_core::bytes::serialize(data.as_slice(), serializer)
+			} else {
+				serializer.serialize_none()
+			}
+		}
+
+		pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error> {
+			use serde::de::Error;
+			match Option::deserialize(deserializer) {
+				Ok(Some(data)) => sp_core::bytes::from_hex(data).map_err(Error::custom).map(Some),
+				Ok(None) => Ok(None),
+				Err(e) => Err(e),
+			}
+		}
+	}
+
+	#[derive(Clone, Eq, PartialEq, Default, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	#[cfg_attr(feature = "std", serde(rename_all = "camelCase"))]
+	pub struct CallTrace {
+		#[cfg_attr(feature = "std", serde(rename = "type"))]
+		pub call_type: CallType,
+		pub from: H160,
+		pub to: H160,
+		#[cfg_attr(feature = "std", serde(with = "sp_core::bytes"))]
+		pub input: Vec<u8>,
+		pub value: U256,
+		// gas limit
+		#[codec(compact)]
+		pub gas: u64,
+		#[codec(compact)]
+		pub gas_used: u64,
+		#[cfg_attr(feature = "std", serde(with = "maybe_hex"))]
+		// value returned from EVM, if any
+		pub output: Option<Vec<u8>>,
+		#[cfg_attr(feature = "std", serde(with = "maybe_hex"))]
+		// evm error, if any
+		pub error: Option<Vec<u8>>,
+		#[cfg_attr(feature = "std", serde(with = "maybe_hex"))]
+		// revert reason, if any
+		pub revert_reason: Option<Vec<u8>>,
+		// depth of the call
+		#[codec(compact)]
+		pub depth: u32,
+		// List of logs
+		pub logs: Vec<LogTrace>,
+		// List of sub-calls
+		pub calls: Vec<CallTrace>,
+	}
+
+	#[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	#[cfg_attr(feature = "std", serde(rename_all = "camelCase"))]
+	pub enum LogTrace {
+		Log {
+			address: H160,
+			topics: Vec<H256>,
+			#[cfg_attr(feature = "std", serde(with = "sp_core::bytes"))]
+			data: Vec<u8>,
+		},
+		SLoad {
+			address: H160,
+			index: H256,
+			value: H256,
+		},
+		SStore {
+			address: H160,
+			index: H256,
+			value: H256,
+		},
+	}
+
+	#[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	#[cfg_attr(feature = "std", serde(rename_all = "camelCase"))]
+	pub struct Step {
+		pub op: Opcode,
+		#[codec(compact)]
+		pub pc: u32,
+		#[codec(compact)]
+		pub depth: u32,
+		#[codec(compact)]
+		pub gas: u64,
+		// 32 bytes stack items without leading zeros
+		pub stack: Vec<Vec<u8>>,
+		// Chunks of memory 32 bytes each without leading zeros except the last one which is untouched
+		// Recreate the memory by joining the chunks. Each chunk (except the last one) should be 32 bytes
+		pub memory: Option<Vec<Vec<u8>>>,
+	}
+
+	#[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	pub enum TraceOutcome {
+		Calls(Vec<CallTrace>),
+		Steps(Vec<Step>),
+	}
+
+	#[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	pub enum TracerConfig {
+		CallTracer,
+		OpcodeTracer(OpcodeConfig),
+	}
+
+	#[derive(Clone, Eq, PartialEq, Encode, Decode, RuntimeDebug, TypeInfo)]
+	#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+	pub struct OpcodeConfig {
+		// Tracing opcodes is very expensive, so we need to limit the number of opcodes to trace.
+		// Each trace call will have a maximum of `page_size` opcodes. If the number of opcodes
+		// is equal to `page_size` then another trace call will be needed to get the next page of opcodes.
+		pub page: u32,
+		// Number of opcodes to trace in a single page.
+		pub page_size: u32,
+		pub disable_stack: bool,
+		pub enable_memory: bool,
+	}
+}

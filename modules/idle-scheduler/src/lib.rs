@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -24,14 +24,14 @@
 #![allow(clippy::unused_unit)]
 #![allow(unused_must_use)]
 
-use acala_primitives::{task::TaskResult, BlockNumber, Nonce};
-use codec::FullCodec;
-use frame_support::{log, pallet_prelude::*};
+use frame_support::pallet_prelude::*;
 use frame_system::pallet_prelude::*;
 pub use module_support::{DispatchableTask, IdleScheduler};
+use parity_scale_codec::FullCodec;
+use primitives::{task::TaskResult, BlockNumber};
 use scale_info::TypeInfo;
 use sp_runtime::{
-	traits::{BlockNumberProvider, One},
+	traits::{BlockNumberProvider, CheckedAdd, One},
 	ArithmeticError,
 };
 use sp_std::{cmp::PartialEq, fmt::Debug, prelude::*};
@@ -52,6 +52,9 @@ pub mod module {
 
 		/// Weight information for the extrinsics in this module.
 		type WeightInfo: WeightInfo;
+
+		/// The index of tasks.
+		type Index: Parameter + Default + One + CheckedAdd + Copy + TypeInfo;
 
 		/// Dispatchable tasks.
 		type Task: DispatchableTask + FullCodec + Debug + Clone + PartialEq + TypeInfo;
@@ -74,22 +77,22 @@ pub mod module {
 	#[pallet::generate_deposit(pub fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// A task has been dispatched on_idle.
-		TaskDispatched { task_id: Nonce, result: DispatchResult },
+		TaskDispatched { task_id: T::Index, result: DispatchResult },
 		/// A task is added.
-		TaskAdded { task_id: Nonce, task: T::Task },
+		TaskAdded { task_id: T::Index, task: T::Task },
 	}
 
 	/// The schedule tasks waiting to dispatch. After task is dispatched, it's removed.
 	///
-	/// Tasks: map Nonce => Task
+	/// Tasks: map T::Index => Task
 	#[pallet::storage]
 	#[pallet::getter(fn tasks)]
-	pub type Tasks<T: Config> = StorageMap<_, Twox64Concat, Nonce, T::Task, OptionQuery>;
+	pub type Tasks<T: Config> = StorageMap<_, Twox64Concat, T::Index, T::Task, OptionQuery>;
 
 	/// The task id used to index tasks.
 	#[pallet::storage]
 	#[pallet::getter(fn next_task_id)]
-	pub type NextTaskId<T: Config> = StorageValue<_, Nonce, ValueQuery>;
+	pub type NextTaskId<T: Config> = StorageValue<_, T::Index, ValueQuery>;
 
 	/// A temporary variable used to check if should skip dispatch schedule task or not.
 	#[pallet::storage]
@@ -101,8 +104,8 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
-		fn on_initialize(_n: T::BlockNumber) -> Weight {
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
 			// This is the previous relay block because `on_initialize` is executed
 			// before the inherent that sets the new relay chain block number
 			let previous_relay_block: BlockNumber = T::RelayChainBlockNumberProvider::current_block_number();
@@ -111,7 +114,7 @@ pub mod module {
 			T::WeightInfo::on_initialize()
 		}
 
-		fn on_idle(_n: T::BlockNumber, remaining_weight: Weight) -> Weight {
+		fn on_idle(_n: BlockNumberFor<T>, remaining_weight: Weight) -> Weight {
 			// Checks if we have skipped enough relay blocks without block production to skip dispatching
 			// scheduled tasks
 			let current_relay_block_number: BlockNumber = T::RelayChainBlockNumberProvider::current_block_number();
@@ -132,7 +135,7 @@ pub mod module {
 			}
 		}
 
-		fn on_finalize(_n: T::BlockNumber) {
+		fn on_finalize(_n: BlockNumberFor<T>) {
 			// Don't commit to storage, needed for the case block is full and `on_idle` isn't called
 			PreviousRelayBlockNumber::<T>::kill();
 		}
@@ -151,7 +154,7 @@ pub mod module {
 
 impl<T: Config> Pallet<T> {
 	/// Add the task to the queue to be dispatched later.
-	fn do_schedule_task(task: T::Task) -> Result<Nonce, DispatchError> {
+	fn do_schedule_task(task: T::Task) -> Result<T::Index, DispatchError> {
 		let id = Self::get_next_task_id()?;
 		Tasks::<T>::insert(id, &task);
 		Self::deposit_event(Event::<T>::TaskAdded { task_id: id, task });
@@ -159,10 +162,10 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Retrieves the next task ID from storage, and increment it by one.
-	fn get_next_task_id() -> Result<Nonce, DispatchError> {
-		NextTaskId::<T>::mutate(|current| -> Result<Nonce, DispatchError> {
+	fn get_next_task_id() -> Result<T::Index, DispatchError> {
+		NextTaskId::<T>::mutate(|current| -> Result<T::Index, DispatchError> {
 			let id = *current;
-			*current = current.checked_add(One::one()).ok_or(ArithmeticError::Overflow)?;
+			*current = current.checked_add(&One::one()).ok_or(ArithmeticError::Overflow)?;
 			Ok(id)
 		})
 	}
@@ -175,7 +178,7 @@ impl<T: Config> Pallet<T> {
 			return total_weight;
 		}
 
-		let mut completed_tasks: Vec<(Nonce, TaskResult)> = vec![];
+		let mut completed_tasks: Vec<(T::Index, TaskResult)> = vec![];
 
 		for (id, task) in Tasks::<T>::iter() {
 			let result = task.dispatch(weight_remaining);
@@ -197,7 +200,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Removes completed tasks and deposits events.
-	pub fn remove_completed_tasks(completed_tasks: Vec<(Nonce, TaskResult)>) {
+	pub fn remove_completed_tasks(completed_tasks: Vec<(T::Index, TaskResult)>) {
 		// Deposit event and remove completed tasks.
 		for (id, result) in completed_tasks {
 			Self::deposit_event(Event::<T>::TaskDispatched {
@@ -209,8 +212,8 @@ impl<T: Config> Pallet<T> {
 	}
 }
 
-impl<T: Config> IdleScheduler<T::Task> for Pallet<T> {
-	fn schedule(task: T::Task) -> Result<Nonce, DispatchError> {
+impl<T: Config> IdleScheduler<T::Index, T::Task> for Pallet<T> {
+	fn schedule(task: T::Task) -> Result<T::Index, DispatchError> {
 		Self::do_schedule_task(task)
 	}
 
@@ -218,7 +221,7 @@ impl<T: Config> IdleScheduler<T::Task> for Pallet<T> {
 	/// Otherwise the scheduler will keep the task and run it later.
 	/// NOTE: Only used for synchronous execution case, because `T::WeightInfo::clear_tasks()` is
 	/// not considered.
-	fn dispatch(id: Nonce, weight_limit: Weight) -> Weight {
+	fn dispatch(id: T::Index, weight_limit: Weight) -> Weight {
 		if let Some(task) = Tasks::<T>::get(id) {
 			let result = task.dispatch(weight_limit);
 			let used_weight = result.used_weight;

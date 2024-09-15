@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,25 +18,22 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
+#![allow(clippy::type_complexity)]
 
 use frame_support::{
-	log,
 	pallet_prelude::*,
 	traits::{Contains, Get, LockIdentifier},
-	transactional, BoundedVec,
+	BoundedVec,
 };
 use frame_system::pallet_prelude::*;
-use orml_traits::{BasicCurrency, BasicLockableCurrency};
+use module_support::NomineesProvider;
+use orml_traits::{BasicCurrency, BasicLockableCurrency, Handler};
 use primitives::{
 	bonding::{self, BondingController},
 	Balance, EraIndex,
 };
-use sp_runtime::{
-	traits::{MaybeDisplay, MaybeSerializeDeserialize, Member, Zero},
-	SaturatedConversion,
-};
+use sp_runtime::traits::{MaybeDisplay, MaybeSerializeDeserialize, Member, Zero};
 use sp_std::{fmt::Debug, prelude::*};
-use support::{NomineesProvider, OnNewEra};
 
 mod mock;
 mod tests;
@@ -51,21 +48,50 @@ pub mod module {
 
 	#[pallet::config]
 	pub trait Config<I: 'static = ()>: frame_system::Config {
+		/// The overarching event type.
 		type RuntimeEvent: From<Event<Self, I>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-		type Currency: BasicLockableCurrency<Self::AccountId, Moment = Self::BlockNumber, Balance = Balance>;
+
+		/// The token as vote.
+		type Currency: BasicLockableCurrency<Self::AccountId, Moment = BlockNumberFor<Self>, Balance = Balance>;
+
+		/// Nominee ID
 		type NomineeId: Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + Ord;
+
+		/// LockIdentifier for lock vote token.
 		#[pallet::constant]
 		type PalletId: Get<LockIdentifier>;
+
+		/// The minimum amount of tokens that can be bonded.
 		#[pallet::constant]
 		type MinBond: Get<Balance>;
+
+		/// The waiting eras when unbond token.
 		#[pallet::constant]
 		type BondingDuration: Get<EraIndex>;
+
+		/// The maximum number of nominees when voted and picked up.
 		#[pallet::constant]
-		type NominateesCount: Get<u32>;
+		type MaxNominateesCount: Get<u32>;
+
+		/// The maximum number of simultaneous unbonding chunks that can exist.
 		#[pallet::constant]
 		type MaxUnbondingChunks: Get<u32>;
+
+		/// The valid nominee filter.
 		type NomineeFilter: Contains<Self::NomineeId>;
-		/// Weight information for the extrinsics in this module.
+
+		/// Origin represented Governance
+		type GovernanceOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+		/// Callback when an account bonded.
+		type OnBonded: Handler<(Self::AccountId, Balance)>;
+
+		/// Callback when an account unbonded.
+		type OnUnbonded: Handler<(Self::AccountId, Balance)>;
+
+		/// Current era.
+		type CurrentEra: Get<EraIndex>;
+
 		type WeightInfo: WeightInfo;
 	}
 
@@ -84,7 +110,30 @@ pub mod module {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(crate) fn deposit_event)]
 	pub enum Event<T: Config<I>, I: 'static = ()> {
-		Rebond { who: T::AccountId, amount: Balance },
+		Bond {
+			who: T::AccountId,
+			amount: Balance,
+		},
+		Unbond {
+			who: T::AccountId,
+			amount: Balance,
+		},
+		Rebond {
+			who: T::AccountId,
+			amount: Balance,
+		},
+		WithdrawUnbonded {
+			who: T::AccountId,
+			amount: Balance,
+		},
+		Nominate {
+			who: T::AccountId,
+			targets: Vec<T::NomineeId>,
+		},
+		ResetReservedNominees {
+			group_index: u16,
+			reserved_nominees: Vec<T::NomineeId>,
+		},
 	}
 
 	/// The nominations for nominators.
@@ -96,7 +145,7 @@ pub mod module {
 		_,
 		Twox64Concat,
 		T::AccountId,
-		BoundedVec<<T as Config<I>>::NomineeId, T::NominateesCount>,
+		BoundedVec<<T as Config<I>>::NomineeId, T::MaxNominateesCount>,
 		ValueQuery,
 	>;
 
@@ -116,33 +165,30 @@ pub mod module {
 	pub type Votes<T: Config<I>, I: 'static = ()> =
 		StorageMap<_, Twox64Concat, <T as Config<I>>::NomineeId, Balance, ValueQuery>;
 
-	/// The elected nominees.
+	/// Reserved nominees.
 	///
-	/// Nominees: Vec<NomineeId>
+	/// ReservedNominees: map u16 => Vec<NomineeId>
 	#[pallet::storage]
-	#[pallet::getter(fn nominees)]
-	pub type Nominees<T: Config<I>, I: 'static = ()> =
-		StorageValue<_, BoundedVec<<T as Config<I>>::NomineeId, T::NominateesCount>, ValueQuery>;
-
-	/// Current era index.
-	///
-	/// CurrentEra: EraIndex
-	#[pallet::storage]
-	#[pallet::getter(fn current_era)]
-	pub type CurrentEra<T: Config<I>, I: 'static = ()> = StorageValue<_, EraIndex, ValueQuery>;
+	#[pallet::getter(fn reserved_nominees)]
+	pub type ReservedNominees<T: Config<I>, I: 'static = ()> = StorageMap<
+		_,
+		Blake2_128Concat,
+		u16,
+		BoundedVec<<T as Config<I>>::NomineeId, T::MaxNominateesCount>,
+		ValueQuery,
+	>;
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
 	pub struct Pallet<T, I = ()>(PhantomData<(T, I)>);
 
 	#[pallet::hooks]
-	impl<T: Config<I>, I: 'static> Hooks<T::BlockNumber> for Pallet<T, I> {}
+	impl<T: Config<I>, I: 'static> Hooks<BlockNumberFor<T>> for Pallet<T, I> {}
 
 	#[pallet::call]
 	impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::bond())]
-		#[transactional]
 		pub fn bond(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -152,23 +198,36 @@ pub mod module {
 				let old_nominations = Self::nominations(&who);
 
 				Self::update_votes(change.old, &old_nominations, change.new, &old_nominations);
+
+				T::OnBonded::handle(&(who.clone(), change.change))?;
+
+				Self::deposit_event(Event::Bond {
+					who,
+					amount: change.change,
+				});
 			}
 			Ok(())
 		}
 
 		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::bond())]
-		#[transactional]
 		pub fn unbond(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			let unbond_at = Self::current_era().saturating_add(T::BondingDuration::get());
+			let unbond_at = T::CurrentEra::get().saturating_add(T::BondingDuration::get());
 			let change = <Self as BondingController>::unbond(&who, amount, unbond_at)?;
 
 			if let Some(change) = change {
 				let old_nominations = Self::nominations(&who);
 
 				Self::update_votes(change.old, &old_nominations, change.new, &old_nominations);
+
+				T::OnUnbonded::handle(&(who.clone(), change.change))?;
+
+				Self::deposit_event(Event::Unbond {
+					who,
+					amount: change.change,
+				});
 			}
 
 			Ok(())
@@ -176,7 +235,6 @@ pub mod module {
 
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::rebond(T::MaxUnbondingChunks::get()))]
-		#[transactional]
 		pub fn rebond(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -186,6 +244,9 @@ pub mod module {
 				let old_nominations = Self::nominations(&who);
 
 				Self::update_votes(change.old, &old_nominations, change.new, &old_nominations);
+
+				T::OnBonded::handle(&(who.clone(), change.change))?;
+
 				Self::deposit_event(Event::Rebond {
 					who,
 					amount: change.change,
@@ -197,24 +258,29 @@ pub mod module {
 
 		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::withdraw_unbonded(T::MaxUnbondingChunks::get()))]
-		#[transactional]
 		pub fn withdraw_unbonded(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			<Self as BondingController>::withdraw_unbonded(&who, Self::current_era())?;
+			let change = <Self as BondingController>::withdraw_unbonded(&who, T::CurrentEra::get())?;
+
+			if let Some(change) = change {
+				Self::deposit_event(Event::WithdrawUnbonded {
+					who,
+					amount: change.change,
+				});
+			}
 
 			Ok(())
 		}
 
 		#[pallet::call_index(4)]
 		#[pallet::weight(T::WeightInfo::nominate(targets.len() as u32))]
-		#[transactional]
 		pub fn nominate(origin: OriginFor<T>, targets: Vec<T::NomineeId>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
 			let ledger = Self::ledger(&who).ok_or(Error::<T, I>::NotBonded)?;
 
-			let bounded_targets: BoundedVec<<T as Config<I>>::NomineeId, <T as Config<I>>::NominateesCount> = {
+			let bounded_targets: BoundedVec<<T as Config<I>>::NomineeId, <T as Config<I>>::MaxNominateesCount> = {
 				if targets.is_empty() {
 					Err(Error::<T, I>::InvalidTargetsLength)
 				} else {
@@ -238,12 +304,16 @@ pub mod module {
 
 			Self::update_votes(old_active, &old_nominations, old_active, &bounded_targets);
 			Nominations::<T, I>::insert(&who, &bounded_targets);
+
+			Self::deposit_event(Event::Nominate {
+				who,
+				targets: bounded_targets.to_vec(),
+			});
 			Ok(())
 		}
 
 		#[pallet::call_index(5)]
-		#[pallet::weight(T::WeightInfo::chill(T::NominateesCount::get()))]
-		#[transactional]
+		#[pallet::weight(T::WeightInfo::chill(T::MaxNominateesCount::get()))]
 		pub fn chill(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
@@ -255,6 +325,33 @@ pub mod module {
 			Self::update_votes(old_active, &old_nominations, Zero::zero(), &[]);
 			Nominations::<T, I>::remove(&who);
 
+			Self::deposit_event(Event::Nominate { who, targets: vec![] });
+			Ok(())
+		}
+
+		#[pallet::call_index(6)]
+		#[pallet::weight(T::WeightInfo::reset_reserved_nominees(updates.len() as u32))]
+		pub fn reset_reserved_nominees(
+			origin: OriginFor<T>,
+			updates: Vec<(u16, BoundedVec<T::NomineeId, T::MaxNominateesCount>)>,
+		) -> DispatchResult {
+			T::GovernanceOrigin::ensure_origin(origin)?;
+			for (group_index, reserved_nominees) in updates {
+				let mut reserved_nominees: Vec<T::NomineeId> = reserved_nominees.to_vec();
+				reserved_nominees.sort();
+				reserved_nominees.dedup();
+
+				let reserved: BoundedVec<T::NomineeId, T::MaxNominateesCount> = reserved_nominees
+					.clone()
+					.try_into()
+					.expect("the length has been checked in params; qed");
+				ReservedNominees::<T, I>::insert(group_index, reserved);
+
+				Self::deposit_event(Event::ResetReservedNominees {
+					group_index,
+					reserved_nominees,
+				});
+			}
 			Ok(())
 		}
 	}
@@ -280,33 +377,68 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 		}
 	}
 
-	fn rebalance() {
-		let mut voters = Votes::<T, I>::iter().collect::<Vec<(T::NomineeId, Balance)>>();
+	fn sort_voted_nominees() -> Vec<T::NomineeId> {
+		let mut voters = Votes::<T, I>::iter()
+			.filter(|(id, _)| T::NomineeFilter::contains(id))
+			.collect::<Vec<(T::NomineeId, Balance)>>();
 
 		voters.sort_by(|a, b| b.1.cmp(&a.1));
 
-		let new_nominees: BoundedVec<<T as Config<I>>::NomineeId, <T as Config<I>>::NominateesCount> = voters
-			.into_iter()
-			.take(T::NominateesCount::get().saturated_into())
-			.map(|(nominee, _)| nominee)
-			.collect::<Vec<_>>()
-			.try_into()
-			.expect("Only took from voters");
-
-		Nominees::<T, I>::put(new_nominees);
+		voters
+			.iter()
+			.map(|(nomination, _)| nomination.clone())
+			.collect::<Vec<T::NomineeId>>()
 	}
 }
 
 impl<T: Config<I>, I: 'static> NomineesProvider<T::NomineeId> for Pallet<T, I> {
 	fn nominees() -> Vec<T::NomineeId> {
-		Nominees::<T, I>::get().into_inner()
+		let mut sorted_voted_nominees = Self::sort_voted_nominees();
+		sorted_voted_nominees.truncate(T::MaxNominateesCount::get() as usize);
+		sorted_voted_nominees
 	}
-}
 
-impl<T: Config<I>, I: 'static> OnNewEra<EraIndex> for Pallet<T, I> {
-	fn on_new_era(era: EraIndex) {
-		CurrentEra::<T, I>::put(era);
-		Self::rebalance();
+	fn nominees_in_groups(group_index_list: Vec<u16>) -> Vec<(u16, Vec<T::NomineeId>)> {
+		let mut nominees_in_groups = group_index_list
+			.into_iter()
+			.map(|group_index| (group_index, ReservedNominees::<T, I>::get(group_index).to_vec()))
+			.collect::<Vec<(u16, Vec<T::NomineeId>)>>();
+
+		let max_nominatees_count = T::MaxNominateesCount::get() as usize;
+
+		for nominee in Self::sort_voted_nominees() {
+			if nominees_in_groups
+				.iter()
+				.all(|(_, nominees)| nominees.len() == max_nominatees_count)
+			{
+				break;
+			}
+
+			let mut distribute_index: Option<(usize, usize)> = None;
+
+			// distribute nominee to the group that does not contain nominee and has the shortest length
+			for (index, (_, nominees)) in nominees_in_groups.iter().enumerate() {
+				if !nominees.contains(&nominee) && nominees.len() < max_nominatees_count {
+					match distribute_index {
+						Some((_, len)) => {
+							if nominees.len() < len {
+								distribute_index = Some((index, nominees.len()));
+							}
+						}
+						None => {
+							distribute_index = Some((index, nominees.len()));
+						}
+					}
+				}
+			}
+
+			// insert nominee to groups
+			if let Some((index, _)) = distribute_index {
+				nominees_in_groups[index].1.push(nominee);
+			}
+		}
+
+		nominees_in_groups
 	}
 }
 

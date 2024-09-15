@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -17,14 +17,15 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{evm::EthereumTransactionMessage, signature::AcalaMultiSignature, to_bytes, Address, Balance};
-use codec::{Decode, Encode};
 use frame_support::{
 	dispatch::{DispatchInfo, GetDispatchInfo},
-	log,
 	traits::{ExtrinsicCall, Get},
 };
-use module_evm_utility::ethereum::{EIP1559TransactionMessage, LegacyTransactionMessage, TransactionAction};
+use module_evm_utility::ethereum::{
+	EIP1559TransactionMessage, EIP2930TransactionMessage, LegacyTransactionMessage, TransactionAction,
+};
 use module_evm_utility_macro::keccak256;
+use parity_scale_codec::{Decode, Encode};
 use scale_info::TypeInfo;
 use sp_core::{H160, H256};
 use sp_io::{crypto::secp256k1_ecdsa_recover, hashing::keccak_256};
@@ -34,24 +35,19 @@ use sp_runtime::{
 	transaction_validity::{InvalidTransaction, TransactionValidityError},
 	AccountId32, RuntimeDebug,
 };
+#[cfg(not(feature = "std"))]
+use sp_std::alloc::format;
 use sp_std::{marker::PhantomData, prelude::*};
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
-#[scale_info(skip_type_params(ConvertEthTx, CheckPayerTx))]
-pub struct AcalaUncheckedExtrinsic<
-	Call,
-	Extra: SignedExtension,
-	ConvertEthTx,
-	StorageDepositPerByte,
-	TxFeePerGas,
-	CheckPayerTx,
->(
+#[scale_info(skip_type_params(ConvertEthTx))]
+pub struct AcalaUncheckedExtrinsic<Call, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>(
 	pub UncheckedExtrinsic<Address, Call, AcalaMultiSignature, Extra>,
-	PhantomData<(ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx)>,
+	PhantomData<(ConvertEthTx, StorageDepositPerByte, TxFeePerGas)>,
 );
 
-impl<Call, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx> Extrinsic
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<Call: TypeInfo, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas> Extrinsic
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 {
 	type Call = Call;
 
@@ -73,28 +69,27 @@ impl<Call, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePer
 	}
 }
 
-impl<Call, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx> ExtrinsicMetadata
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<Call, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas> ExtrinsicMetadata
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 {
 	const VERSION: u8 = UncheckedExtrinsic::<Address, Call, AcalaMultiSignature, Extra>::VERSION;
 	type SignedExtensions = Extra;
 }
 
-impl<Call, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx> ExtrinsicCall
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<Call: TypeInfo, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas> ExtrinsicCall
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 {
 	fn call(&self) -> &Self::Call {
 		self.0.call()
 	}
 }
 
-impl<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, Lookup, CheckPayerTx> Checkable<Lookup>
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, Lookup> Checkable<Lookup>
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 where
 	Call: Encode + Member,
 	Extra: SignedExtension<AccountId = AccountId32>,
 	ConvertEthTx: Convert<(Call, Extra), Result<(EthereumTransactionMessage, Extra), InvalidTransaction>>,
-	CheckPayerTx: Convert<(Call, Extra), Result<(), InvalidTransaction>>,
 	StorageDepositPerByte: Get<Balance>,
 	TxFeePerGas: Get<Balance>,
 	Lookup: traits::Lookup<Source = Address, Target = AccountId32>,
@@ -103,10 +98,6 @@ where
 
 	fn check(self, lookup: &Lookup) -> Result<Self::Checked, TransactionValidityError> {
 		let function = self.0.function.clone();
-		let signature = self.0.signature.clone();
-		if let Some((_, _, extra)) = signature {
-			CheckPayerTx::convert((function.clone(), extra))?;
-		}
 
 		match self.0.signature {
 			Some((addr, AcalaMultiSignature::Ethereum(sig), extra)) => {
@@ -136,6 +127,50 @@ where
 					value: eth_msg.value.into(),
 					input: eth_msg.input,
 					chain_id: Some(eth_msg.chain_id),
+				};
+				log::trace!(
+					target: "evm", "tx msg: {:?}", msg
+				);
+
+				let msg_hash = msg.hash(); // TODO: consider rewirte this to use `keccak_256` for hashing because it could be faster
+
+				let signer = recover_signer(&sig, msg_hash.as_fixed_bytes()).ok_or(InvalidTransaction::BadProof)?;
+
+				let account_id = lookup.lookup(Address::Address20(signer.into()))?;
+				let expected_account_id = lookup.lookup(addr)?;
+
+				if account_id != expected_account_id {
+					return Err(InvalidTransaction::BadProof.into());
+				}
+
+				Ok(CheckedExtrinsic {
+					signed: Some((account_id, eth_extra)),
+					function,
+				})
+			}
+			Some((addr, AcalaMultiSignature::Eip2930(sig), extra)) => {
+				let (eth_msg, eth_extra) = ConvertEthTx::convert((function.clone(), extra))?;
+				log::trace!(
+					target: "evm", "Eip2930 eth_msg: {:?}", eth_msg
+				);
+
+				let (tx_gas_price, tx_gas_limit) = if eth_msg.gas_price.is_zero() {
+					recover_sign_data(&eth_msg, TxFeePerGas::get(), StorageDepositPerByte::get())
+						.ok_or(InvalidTransaction::BadProof)?
+				} else {
+					// eth_call_v2, the gas_price and gas_limit are encoded.
+					(eth_msg.gas_price as u128, eth_msg.gas_limit as u128)
+				};
+
+				let msg = EIP2930TransactionMessage {
+					chain_id: eth_msg.chain_id,
+					nonce: eth_msg.nonce.into(),
+					gas_price: tx_gas_price.into(),
+					gas_limit: tx_gas_limit.into(),
+					action: eth_msg.action,
+					value: eth_msg.value.into(),
+					input: eth_msg.input,
+					access_list: eth_msg.access_list,
 				};
 				log::trace!(
 					target: "evm", "tx msg: {:?}", msg
@@ -238,8 +273,8 @@ where
 	}
 }
 
-impl<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx> GetDispatchInfo
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas> GetDispatchInfo
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 where
 	Call: GetDispatchInfo,
 	Extra: SignedExtension,
@@ -249,10 +284,8 @@ where
 	}
 }
 
-#[cfg(feature = "std")]
-impl<Call: Encode, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
-	serde::Serialize
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<Call: Encode, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas> serde::Serialize
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 {
 	fn serialize<S>(&self, seq: S) -> Result<S::Ok, S::Error>
 	where
@@ -262,10 +295,8 @@ impl<Call: Encode, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, 
 	}
 }
 
-#[cfg(feature = "std")]
-impl<'a, Call: Decode, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
-	serde::Deserialize<'a>
-	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas, CheckPayerTx>
+impl<'a, Call: Decode, Extra: SignedExtension, ConvertEthTx, StorageDepositPerByte, TxFeePerGas> serde::Deserialize<'a>
+	for AcalaUncheckedExtrinsic<Call, Extra, ConvertEthTx, StorageDepositPerByte, TxFeePerGas>
 {
 	fn deserialize<D>(de: D) -> Result<Self, D::Error>
 	where

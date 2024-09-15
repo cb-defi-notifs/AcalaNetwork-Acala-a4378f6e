@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,7 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-#![cfg(feature = "bench")]
+#![cfg(feature = "wasm-bench")]
 #![allow(dead_code)]
 
 pub mod mock;
@@ -30,11 +30,11 @@ use hex::FromHex;
 use mock::*;
 use module_support::mocks::MockAddressMapping;
 use module_support::AddressMapping;
-use orml_bencher::{benches, Bencher};
 use primitives::evm::Vicinity;
 use serde_json::Value;
 use sp_core::{H160, H256, U256};
 use sp_std::{convert::TryInto, prelude::*, rc::Rc, str::FromStr};
+use wasm_bencher::{benches, Bencher};
 
 fn get_bench_info(name: &str) -> (Vec<u8>, H160, Vec<u8>, u64, Vec<u8>) {
 	let benches_str = include_str!("../../../../evm-bench/build/benches.json");
@@ -57,11 +57,10 @@ fn get_bench_info(name: &str) -> (Vec<u8>, H160, Vec<u8>, u64, Vec<u8>) {
 
 fn faucet(address: &H160) {
 	let account_id = MockAddressMapping::get_account_id(&address);
-	assert_ok!(Balances::set_balance_deprecated(
+	assert_ok!(Balances::force_set_balance(
 		RuntimeOrigin::root(),
 		account_id,
 		1_000_000_000_000_000,
-		0
 	));
 }
 
@@ -81,7 +80,13 @@ fn whitelist_keys(b: &mut Bencher, from: H160, code: Vec<u8>) -> H160 {
 	let state = SubstrateStackState::<Runtime>::new(&vicinity, metadata);
 	let mut executor = StackExecutor::new_with_precompiles(state, config, &());
 
-	let mut runtime = EVMRuntime::new(Rc::new(code.clone()), Rc::new(Vec::new()), context, config);
+	let mut runtime = EVMRuntime::new(
+		Rc::new(code.clone()),
+		Rc::new(Vec::new()),
+		context,
+		config.stack_limit,
+		config.memory_limit,
+	);
 	let reason = executor.execute(&mut runtime);
 
 	assert!(reason.is_succeed(), "{:?}", reason);
@@ -201,10 +206,6 @@ macro_rules! evm_call {
 				result.exit_reason
 			);
 			assert_eq!(contract_address, result.value);
-			assert_ok!(EVM::publish_free(
-				RuntimeOrigin::signed(CouncilAccount::get()),
-				contract_address
-			));
 
 			let result = b
 				.bench(|| {

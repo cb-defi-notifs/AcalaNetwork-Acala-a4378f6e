@@ -16,3 +16,11 @@ __pycache__
 
 ts-tests/cache/
 ts-tests/node_modules/
+
+ts-tests/.yarn/*
+!ts-tests/.yarn/patches
+!ts-tests/.yarn/plugins
+!ts-tests/.yarn/releases
+
+chainspecs/*.json
+!chainspecs/*template.json

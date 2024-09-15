@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,12 +22,6 @@ use crate::setup::*;
 fn treasury_should_take_xcm_execution_revenue() {
 	ExtBuilder::default().build().execute_with(|| {
 		let dot_amount = 1000 * dollar(RELAY_CHAIN_CURRENCY);
-		#[cfg(feature = "with-mandala-runtime")] // Mandala uses DOT, which has 10 d.p. accuracy.
-		let actual_amount = 9_999_999_736_030;
-		#[cfg(feature = "with-karura-runtime")] // Karura uses KSM, which has 12 d.p. accuracy.
-		let actual_amount = 999_999_894_412_000;
-		#[cfg(feature = "with-acala-runtime")] // Acala uses DOT, which has 10 d.p. accuracy.
-		let actual_amount = 9_999_998_944_120;
 
 		#[cfg(feature = "with-mandala-runtime")]
 		let shallow_weight = 3_000_000;
@@ -35,10 +29,10 @@ fn treasury_should_take_xcm_execution_revenue() {
 		let shallow_weight = 600_000_000;
 		#[cfg(feature = "with-acala-runtime")]
 		let shallow_weight = 600_000_000;
-		let origin = MultiLocation::parent();
+		let origin = Location::parent();
 
 		// receive relay chain token
-		let asset: MultiAsset = (MultiLocation::parent(), dot_amount).into();
+		let asset: Asset = (Location::parent(), dot_amount).into();
 		let mut msg = Xcm(vec![
 			ReserveAssetDeposited(asset.clone().into()),
 			BuyExecution {
@@ -47,10 +41,10 @@ fn treasury_should_take_xcm_execution_revenue() {
 			},
 			DepositAsset {
 				assets: AllCounted(u32::max_value()).into(),
-				beneficiary: X1(Junction::AccountId32 {
+				beneficiary: Junction::AccountId32 {
 					network: None,
 					id: ALICE,
-				})
+				}
 				.into(),
 			},
 		]);
@@ -62,13 +56,22 @@ fn treasury_should_take_xcm_execution_revenue() {
 		assert_eq!(Tokens::free_balance(RELAY_CHAIN_CURRENCY, &TreasuryAccount::get()), 0);
 
 		let weight_limit = debt;
-		let hash = msg.using_encoded(sp_io::hashing::blake2_256);
+		let mut hash = msg.using_encoded(sp_io::hashing::blake2_256);
 		assert_eq!(
-			XcmExecutor::<XcmConfig>::execute_xcm(origin, msg, hash, weight_limit),
-			Outcome::Complete(Weight::from_parts(shallow_weight, 0))
+			XcmExecutor::<XcmConfig>::prepare_and_execute(origin, msg, &mut hash, weight_limit, Weight::zero()),
+			Outcome::Complete {
+				used: Weight::from_parts(shallow_weight, 0)
+			}
 		);
 
-		assert_eq!(Tokens::free_balance(RELAY_CHAIN_CURRENCY, &ALICE.into()), actual_amount);
+		let actual_amount = Tokens::free_balance(RELAY_CHAIN_CURRENCY, &ALICE.into());
+		#[cfg(feature = "with-mandala-runtime")]
+		assert_debug_snapshot!(actual_amount, @"9999999719830");
+		#[cfg(feature = "with-karura-runtime")]
+		assert_debug_snapshot!(actual_amount, @"999999887932000");
+		#[cfg(feature = "with-acala-runtime")]
+		assert_debug_snapshot!(actual_amount, @"9999998879320");
+
 		assert_eq!(
 			Tokens::free_balance(RELAY_CHAIN_CURRENCY, &TreasuryAccount::get()),
 			dot_amount - actual_amount

@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,7 +18,6 @@
 
 #![allow(clippy::type_complexity)]
 use crate::{AddressMapping, CurrencyId, Erc20InfoMapping, TransactionPayment};
-use codec::Encode;
 use frame_support::pallet_prelude::{DispatchClass, Pays, Weight};
 use nutsfinance_stable_asset::{
 	traits::StableAsset, PoolTokenIndex, RedeemProportionResult, StableAssetPoolId, StableAssetPoolInfo, SwapResult,
@@ -35,6 +34,8 @@ use sp_std::{marker::PhantomData, vec::Vec};
 
 #[cfg(feature = "std")]
 use frame_support::traits::Imbalance;
+use frame_system::pallet_prelude::BlockNumberFor;
+use parity_scale_codec::{Decode, Encode};
 
 pub struct MockAddressMapping;
 
@@ -48,7 +49,7 @@ impl AddressMapping<AccountId32> for MockAddressMapping {
 
 	fn get_evm_address(account_id: &AccountId32) -> Option<H160> {
 		let data: [u8; 32] = account_id.clone().into();
-		if data.starts_with(b"evm:") {
+		if data.starts_with(b"evm:") && data.ends_with(&[0u8; 8]) {
 			Some(H160::from_slice(&data[4..24]))
 		} else {
 			None
@@ -406,5 +407,21 @@ impl<CurrencyId, Balance, AccountId, BlockNumber> StableAsset
 		_dy_bal: Self::Balance,
 	) -> Option<SwapResult<Self::Balance>> {
 		unimplemented!()
+	}
+}
+
+pub struct TestRandomness<T>(sp_std::marker::PhantomData<T>);
+
+impl<Output: Decode + Default, T> frame_support::traits::Randomness<Output, BlockNumberFor<T>> for TestRandomness<T>
+where
+	T: frame_system::Config,
+{
+	fn random(subject: &[u8]) -> (Output, BlockNumberFor<T>) {
+		use sp_runtime::traits::TrailingZeroInput;
+
+		(
+			Output::decode(&mut TrailingZeroInput::new(subject)).unwrap_or_default(),
+			frame_system::Pallet::<T>::block_number(),
+		)
 	}
 }

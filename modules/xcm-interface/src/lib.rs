@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -27,9 +27,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
 
-use frame_support::{log, pallet_prelude::*, traits::Get, transactional};
+use frame_support::{pallet_prelude::*, traits::Get};
 use frame_system::pallet_prelude::*;
-use module_support::{CallBuilder, CrowdloanVaultXcm, HomaSubAccountXcm};
+use module_support::{relaychain::CallBuilder, HomaSubAccountXcm};
 use orml_traits::XcmTransfer;
 use primitives::{Balance, CurrencyId, EraIndex};
 use scale_info::TypeInfo;
@@ -37,10 +37,8 @@ use sp_runtime::traits::Convert;
 use sp_std::{convert::From, prelude::*, vec, vec::Vec};
 use xcm::{prelude::*, v3::Weight as XcmWeight};
 
-mod mock;
-mod tests;
+mod mocks;
 
-pub mod migrations;
 pub use module::*;
 
 #[frame_support::pallet]
@@ -56,9 +54,10 @@ pub mod module {
 		HomaBondExtra,
 		HomaUnbond,
 		// Parachain fee with location info
-		ParachainFee(Box<MultiLocation>),
+		ParachainFee(Box<Location>),
 		// `XcmPallet::reserve_transfer_assets` call via proxy account
 		ProxyReserveTransferAssets,
+		HomaNominate,
 	}
 
 	#[pallet::config]
@@ -80,22 +79,22 @@ pub mod module {
 		#[pallet::constant]
 		type RelayChainUnbondingSlashingSpans: Get<EraIndex>;
 
-		/// The convert for convert sovereign subacocunt index to the MultiLocation where the
+		/// The convert for convert sovereign subacocunt index to the Location where the
 		/// staking currencies are sent to.
-		type SovereignSubAccountLocationConvert: Convert<u16, MultiLocation>;
+		type SovereignSubAccountLocationConvert: Convert<u16, Location>;
 
 		/// The Call builder for communicating with RelayChain via XCM messaging.
-		type RelayChainCallBuilder: CallBuilder<AccountId = Self::AccountId, Balance = Balance>;
+		type RelayChainCallBuilder: CallBuilder<RelayChainAccountId = Self::AccountId, Balance = Balance>;
 
 		/// The interface to Cross-chain transfer.
 		type XcmTransfer: XcmTransfer<Self::AccountId, Balance, CurrencyId>;
 
 		/// Self parachain location.
 		#[pallet::constant]
-		type SelfLocation: Get<MultiLocation>;
+		type SelfLocation: Get<Location>;
 
-		/// Convert AccountId to MultiLocation to build XCM message.
-		type AccountIdToMultiLocation: Convert<Self::AccountId, MultiLocation>;
+		/// Convert AccountId to Location to build XCM message.
+		type AccountIdToLocation: Convert<Self::AccountId, Location>;
 	}
 
 	#[pallet::error]
@@ -133,7 +132,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -143,7 +142,6 @@ pub mod module {
 		/// - `updates`: vec of tuple: (XcmInterfaceOperation, WeightChange, FeeChange).
 		#[pallet::call_index(0)]
 		#[pallet::weight(frame_support::weights::Weight::from_parts(10_000_000, 0))]
-		#[transactional]
 		pub fn update_xcm_dest_weight_and_fee(
 			origin: OriginFor<T>,
 			updates: Vec<(XcmInterfaceOperation, Option<XcmWeight>, Option<Balance>)>,
@@ -173,9 +171,9 @@ pub mod module {
 		}
 	}
 
-	impl<T: Config> Pallet<T> {}
-
 	impl<T: Config> HomaSubAccountXcm<T::AccountId, Balance> for Pallet<T> {
+		type RelayChainAccountId = T::AccountId;
+
 		/// Cross-chain transfer staking currency to sub account on relaychain.
 		fn transfer_staking_to_sub_account(
 			sender: &T::AccountId,
@@ -276,49 +274,36 @@ pub mod module {
 			Ok(())
 		}
 
+		/// Send XCM message to the relaychain for sub account to nominate.
+		fn nominate_on_sub_account(sub_account_index: u16, targets: Vec<Self::RelayChainAccountId>) -> DispatchResult {
+			let (xcm_dest_weight, xcm_fee) = Self::xcm_dest_weight_and_fee(XcmInterfaceOperation::HomaNominate);
+			let xcm_message = T::RelayChainCallBuilder::finalize_call_into_xcm_message(
+				T::RelayChainCallBuilder::utility_as_derivative_call(
+					T::RelayChainCallBuilder::staking_nominate(targets.clone()),
+					sub_account_index,
+				),
+				xcm_fee,
+				xcm_dest_weight,
+			);
+			let result = pallet_xcm::Pallet::<T>::send_xcm(Here, Parent, xcm_message);
+			log::debug!(
+				target: "xcm-interface",
+				"subaccount {:?} send XCM to nominate {:?}, result: {:?}",
+				sub_account_index, targets, result
+			);
+
+			ensure!(result.is_ok(), Error::<T>::XcmFailed);
+			Ok(())
+		}
+
 		/// The fee of cross-chain transfer is deducted from the recipient.
 		fn get_xcm_transfer_fee() -> Balance {
 			Self::xcm_dest_weight_and_fee(XcmInterfaceOperation::XtokensTransfer).1
 		}
 
 		/// The fee of parachain transfer.
-		fn get_parachain_fee(location: MultiLocation) -> Balance {
+		fn get_parachain_fee(location: Location) -> Balance {
 			Self::xcm_dest_weight_and_fee(XcmInterfaceOperation::ParachainFee(Box::new(location))).1
-		}
-	}
-
-	impl<T: Config> CrowdloanVaultXcm<T::AccountId, Balance> for Pallet<T> {
-		fn transfer_to_liquid_crowdloan_module_account(
-			vault: T::AccountId,
-			recipient: T::AccountId,
-			amount: Balance,
-		) -> DispatchResult {
-			let (xcm_dest_weight, xcm_fee) =
-				Self::xcm_dest_weight_and_fee(XcmInterfaceOperation::ProxyReserveTransferAssets);
-
-			let proxy_call = T::RelayChainCallBuilder::proxy_call(
-				vault.clone(),
-				T::RelayChainCallBuilder::xcm_pallet_reserve_transfer_assets(
-					T::SelfLocation::get(),
-					T::AccountIdToMultiLocation::convert(recipient.clone()),
-					// Note this message is executed in the relay chain context.
-					vec![(Concrete(Here.into()), amount).into()].into(),
-					0,
-				),
-			);
-			let xcm_message =
-				T::RelayChainCallBuilder::finalize_call_into_xcm_message(proxy_call, xcm_fee, xcm_dest_weight);
-
-			let result = pallet_xcm::Pallet::<T>::send_xcm(Here, Parent, xcm_message);
-			log::debug!(
-				target: "xcm-interface",
-				"Send {:?} planck DOT from crowdloan vault {:?} to {:?}, result: {:?}",
-				amount, vault, recipient, result,
-			);
-
-			ensure!(result.is_ok(), Error::<T>::XcmFailed);
-
-			Ok(())
 		}
 	}
 }

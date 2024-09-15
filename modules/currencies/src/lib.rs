@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,7 +22,6 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::upper_case_acronyms)]
 
-use codec::Codec;
 use frame_support::{
 	pallet_prelude::*,
 	traits::{
@@ -36,12 +35,14 @@ use frame_support::{
 	transactional,
 };
 use frame_system::pallet_prelude::*;
+use module_support::{evm::limits::erc20, AddressMapping, EVMBridge, InvokeContext};
 use orml_traits::{
 	arithmetic::{Signed, SimpleArithmetic},
 	currency::{OnDust, TransferAll},
 	BalanceStatus, BasicCurrency, BasicCurrencyExtended, BasicLockableCurrency, BasicReservableCurrency,
 	LockIdentifier, MultiCurrency, MultiCurrencyExtended, MultiLockableCurrency, MultiReservableCurrency,
 };
+use parity_scale_codec::Codec;
 use primitives::{evm::EvmAddress, CurrencyId};
 use sp_io::hashing::blake2_256;
 use sp_runtime::{
@@ -49,7 +50,6 @@ use sp_runtime::{
 	DispatchError, DispatchResult,
 };
 use sp_std::{fmt::Debug, marker, result, vec::Vec};
-use support::{evm::limits::erc20, AddressMapping, EVMBridge, InvokeContext};
 
 mod mock;
 mod tests;
@@ -164,7 +164,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -536,7 +536,7 @@ impl<T: Config> MultiCurrencyExtended<T::AccountId> for Pallet<T> {
 }
 
 impl<T: Config> MultiLockableCurrency<T::AccountId> for Pallet<T> {
-	type Moment = T::BlockNumber;
+	type Moment = BlockNumberFor<T>;
 
 	fn set_lock(
 		lock_id: LockIdentifier,
@@ -940,15 +940,23 @@ impl<T: Config> fungibles::Mutate<T::AccountId> for Pallet<T> {
 		asset_id: Self::AssetId,
 		who: &T::AccountId,
 		amount: Self::Balance,
+		preservation: Preservation,
 		precision: Precision,
 		fortitude: Fortitude,
 	) -> Result<Self::Balance, DispatchError> {
 		match asset_id {
 			CurrencyId::Erc20(_) => <Self as MultiCurrency<_>>::withdraw(asset_id, who, amount).map(|_| amount),
 			id if id == T::GetNativeCurrencyId::get() => {
-				<T::NativeCurrency as fungible::Mutate<_>>::burn_from(who, amount, precision, fortitude)
+				<T::NativeCurrency as fungible::Mutate<_>>::burn_from(who, amount, preservation, precision, fortitude)
 			}
-			_ => <T::MultiCurrency as fungibles::Mutate<_>>::burn_from(asset_id, who, amount, precision, fortitude),
+			_ => <T::MultiCurrency as fungibles::Mutate<_>>::burn_from(
+				asset_id,
+				who,
+				amount,
+				preservation,
+				precision,
+				fortitude,
+			),
 		}
 	}
 
@@ -1225,7 +1233,7 @@ where
 	T: Config,
 	GetCurrencyId: Get<CurrencyId>,
 {
-	type Moment = T::BlockNumber;
+	type Moment = BlockNumberFor<T>;
 
 	fn set_lock(lock_id: LockIdentifier, who: &T::AccountId, amount: Self::Balance) -> DispatchResult {
 		<Pallet<T> as MultiLockableCurrency<T::AccountId>>::set_lock(lock_id, GetCurrencyId::get(), who, amount)
@@ -1353,10 +1361,18 @@ where
 	fn burn_from(
 		who: &T::AccountId,
 		amount: Self::Balance,
+		preservation: Preservation,
 		precision: Precision,
 		fortitude: Fortitude,
 	) -> Result<Self::Balance, DispatchError> {
-		<Pallet<T> as fungibles::Mutate<_>>::burn_from(GetCurrencyId::get(), who, amount, precision, fortitude)
+		<Pallet<T> as fungibles::Mutate<_>>::burn_from(
+			GetCurrencyId::get(),
+			who,
+			amount,
+			preservation,
+			precision,
+			fortitude,
+		)
 	}
 
 	fn transfer(
@@ -1676,10 +1692,11 @@ where
 	fn burn_from(
 		who: &T::AccountId,
 		amount: Self::Balance,
+		preservation: Preservation,
 		precision: Precision,
 		fortitude: Fortitude,
 	) -> Result<Self::Balance, DispatchError> {
-		<Currency as fungible::Mutate<_>>::burn_from(who, amount, precision, fortitude)
+		<Currency as fungible::Mutate<_>>::burn_from(who, amount, preservation, precision, fortitude)
 	}
 
 	fn transfer(

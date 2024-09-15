@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -23,10 +23,10 @@
 use super::*;
 use frame_support::{assert_noop, assert_ok};
 use mock::{RuntimeCall as MockCall, RuntimeEvent, *};
+use module_support::DEXManager;
 use sp_core::offchain::{testing, DbExternalities, OffchainDbExt, OffchainWorkerExt, StorageKind, TransactionPoolExt};
 use sp_io::offchain;
 use sp_runtime::traits::One;
-use support::DEXManager;
 
 fn run_to_block_offchain(n: u64) {
 	while System::block_number() < n {

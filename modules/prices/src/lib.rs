@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -29,8 +29,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
 
-use frame_support::{pallet_prelude::*, transactional};
+use frame_support::pallet_prelude::*;
 use frame_system::pallet_prelude::*;
+use module_support::{DEXManager, Erc20InfoMapping, ExchangeRateProvider, LockablePrice, Price, PriceProvider, Rate};
 use orml_traits::{DataFeeder, DataProvider, GetByKey, MultiCurrency};
 use primitives::{Balance, CurrencyId, Lease};
 use sp_core::U256;
@@ -39,7 +40,6 @@ use sp_runtime::{
 	FixedPointNumber,
 };
 use sp_std::marker::PhantomData;
-use support::{DEXManager, Erc20InfoMapping, ExchangeRateProvider, LockablePrice, Price, PriceProvider, Rate};
 
 mod mock;
 mod tests;
@@ -92,10 +92,10 @@ pub mod module {
 		type Erc20InfoMapping: Erc20InfoMapping;
 
 		/// Get the lease block number of relaychain for specific Lease
-		type LiquidCrowdloanLeaseBlockNumber: GetByKey<Lease, Option<Self::BlockNumber>>;
+		type LiquidCrowdloanLeaseBlockNumber: GetByKey<Lease, Option<BlockNumberFor<Self>>>;
 
 		/// Block number provider for the relaychain.
-		type RelayChainBlockNumber: BlockNumberProvider<BlockNumber = Self::BlockNumber>;
+		type RelayChainBlockNumber: BlockNumberProvider<BlockNumber = BlockNumberFor<Self>>;
 
 		/// The staking reward rate per relaychain block for StakingCurrency.
 		/// In fact, the staking reward is not settled according to the block on relaychain.
@@ -141,7 +141,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -152,7 +152,6 @@ pub mod module {
 		/// - `currency_id`: currency type.
 		#[pallet::call_index(0)]
 		#[pallet::weight((T::WeightInfo::lock_price(), DispatchClass::Operational))]
-		#[transactional]
 		pub fn lock_price(origin: OriginFor<T>, currency_id: CurrencyId) -> DispatchResult {
 			T::LockOrigin::ensure_origin(origin)?;
 			<Pallet<T> as LockablePrice<CurrencyId>>::lock_price(currency_id)?;
@@ -166,7 +165,6 @@ pub mod module {
 		/// - `currency_id`: currency type.
 		#[pallet::call_index(1)]
 		#[pallet::weight((T::WeightInfo::unlock_price(), DispatchClass::Operational))]
-		#[transactional]
 		pub fn unlock_price(origin: OriginFor<T>, currency_id: CurrencyId) -> DispatchResult {
 			T::LockOrigin::ensure_origin(origin)?;
 			<Pallet<T> as LockablePrice<CurrencyId>>::unlock_price(currency_id)?;

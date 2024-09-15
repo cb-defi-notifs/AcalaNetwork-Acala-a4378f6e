@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,21 +22,24 @@
 
 use super::*;
 use frame_support::{
-	construct_runtime, ord_parameter_types, parameter_types,
-	traits::{ConstU128, ConstU32, ConstU64, Everything, Nothing},
+	construct_runtime, derive_impl, ord_parameter_types, parameter_types,
+	traits::{ConstU128, ConstU32, ConstU64, Nothing},
 	PalletId,
 };
 use frame_system::EnsureSignedBy;
-use orml_traits::parameter_type_with_key;
-use primitives::{DexShare, Moment, TokenSymbol, TradingPair};
-use sp_core::{crypto::AccountId32, H256};
-use sp_runtime::{
-	testing::{Header, TestXt},
-	traits::{AccountIdConversion, IdentityLookup, One as OneT},
+use module_support::{
+	mocks::{MockStableAsset, TestRandomness},
+	AuctionManager, EmergencyShutdown, SpecificJointsSwap,
 };
-use sp_std::{cell::RefCell, str::FromStr};
-use support::mocks::MockStableAsset;
-use support::{AuctionManager, EmergencyShutdown, SpecificJointsSwap};
+use orml_traits::parameter_type_with_key;
+use primitives::{evm::convert_decimals_to_evm, DexShare, Moment, ReserveIdentifier, TokenSymbol, TradingPair};
+use sp_core::crypto::AccountId32;
+use sp_runtime::{
+	testing::TestXt,
+	traits::{AccountIdConversion, IdentityLookup, One as OneT},
+	BuildStorage,
+};
+use sp_std::str::FromStr;
 
 pub type AccountId = AccountId32;
 pub type BlockNumber = u64;
@@ -57,31 +60,12 @@ mod cdp_engine {
 	pub use super::super::*;
 }
 
+#[derive_impl(frame_system::config_preludes::TestDefaultConfig as frame_system::DefaultConfig)]
 impl frame_system::Config for Runtime {
-	type RuntimeOrigin = RuntimeOrigin;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type RuntimeCall = RuntimeCall;
-	type Hash = H256;
-	type Hashing = ::sp_runtime::traits::BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
-	type RuntimeEvent = RuntimeEvent;
-	type BlockHashCount = ConstU64<250>;
-	type BlockWeights = ();
-	type BlockLength = ();
-	type Version = ();
-	type PalletInfo = PalletInfo;
+	type Block = Block;
 	type AccountData = pallet_balances::AccountData<Balance>;
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type DbWeight = ();
-	type BaseCallFilter = Everything;
-	type SystemWeightInfo = ();
-	type SS58Prefix = ();
-	type OnSetCode = ();
-	type MaxConsumers = ConstU32<16>;
 }
 
 parameter_type_with_key! {
@@ -100,7 +84,7 @@ impl orml_tokens::Config for Runtime {
 	type CurrencyHooks = ();
 	type MaxLocks = ();
 	type MaxReserves = ();
-	type ReserveIdentifier = [u8; 8];
+	type ReserveIdentifier = ReserveIdentifier;
 	type DustRemovalWhitelist = Nothing;
 }
 
@@ -112,11 +96,11 @@ impl pallet_balances::Config for Runtime {
 	type AccountStore = frame_system::Pallet<Runtime>;
 	type MaxLocks = ();
 	type MaxReserves = ();
-	type ReserveIdentifier = [u8; 8];
+	type ReserveIdentifier = ReserveIdentifier;
 	type WeightInfo = ();
-	type HoldIdentifier = ();
+	type RuntimeHoldReason = RuntimeHoldReason;
+	type RuntimeFreezeReason = RuntimeFreezeReason;
 	type FreezeIdentifier = ();
-	type MaxHolds = ();
 	type MaxFreezes = ();
 }
 pub type AdaptedBasicCurrency = orml_currencies::BasicCurrencyAdapter<Runtime, PalletBalances, Amount, BlockNumber>;
@@ -136,7 +120,7 @@ parameter_types! {
 	pub const LoansPalletId: PalletId = PalletId(*b"aca/loan");
 }
 
-impl loans::Config for Runtime {
+impl module_loans::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Currencies;
 	type RiskManager = CDPEngineModule;
@@ -145,21 +129,21 @@ impl loans::Config for Runtime {
 	type OnUpdateLoan = ();
 }
 
-thread_local! {
-	static BTC_PRICE: RefCell<Option<Price>> = RefCell::new(Some(Price::one()));
-	static DOT_PRICE: RefCell<Option<Price>> = RefCell::new(Some(Price::one()));
-	static LP_AUSD_DOT_PRICE: RefCell<Option<Price>> = RefCell::new(Some(Price::one()));
-	static LP_DOT_BTC_PRICE: RefCell<Option<Price>> = RefCell::new(Some(Price::one()));
+parameter_types! {
+	static BtcPrice: Option<Price> = Some(Price::one());
+	static DotPrice: Option<Price> = Some(Price::one());
+	static LpAusdDotPrice: Option<Price> = Some(Price::one());
+	static LpDotBtcPrice: Option<Price> = Some(Price::one());
 }
 
 pub struct MockPriceSource;
 impl MockPriceSource {
 	pub fn set_price(currency_id: CurrencyId, price: Option<Price>) {
 		match currency_id {
-			BTC => BTC_PRICE.with(|v| *v.borrow_mut() = price),
-			DOT => DOT_PRICE.with(|v| *v.borrow_mut() = price),
-			LP_AUSD_DOT => LP_AUSD_DOT_PRICE.with(|v| *v.borrow_mut() = price),
-			LP_DOT_BTC => LP_DOT_BTC_PRICE.with(|v| *v.borrow_mut() = price),
+			BTC => BtcPrice::mutate(|v| *v = price),
+			DOT => DotPrice::mutate(|v| *v = price),
+			LP_AUSD_DOT => LpAusdDotPrice::mutate(|v| *v = price),
+			LP_DOT_BTC => LpDotBtcPrice::mutate(|v| *v = price),
 			_ => {}
 		}
 	}
@@ -167,27 +151,24 @@ impl MockPriceSource {
 impl PriceProvider<CurrencyId> for MockPriceSource {
 	fn get_price(currency_id: CurrencyId) -> Option<Price> {
 		match currency_id {
-			BTC => BTC_PRICE.with(|v| *v.borrow()),
-			DOT => DOT_PRICE.with(|v| *v.borrow()),
+			BTC => BtcPrice::get(),
+			DOT => DotPrice::get(),
 			AUSD => Some(Price::one()),
-			LP_AUSD_DOT => LP_AUSD_DOT_PRICE.with(|v| *v.borrow()),
-			LP_DOT_BTC => LP_DOT_BTC_PRICE.with(|v| *v.borrow()),
+			LP_AUSD_DOT => LpAusdDotPrice::get(),
+			LP_DOT_BTC => LpDotBtcPrice::get(),
 			_ => None,
 		}
 	}
 }
 
-thread_local! {
-	pub static AUCTION: RefCell<Option<(AccountId, CurrencyId, Balance, Balance)>> = RefCell::new(None);
+parameter_types! {
+	pub static Auction: Option<(AccountId, CurrencyId, Balance, Balance)> = None;
 }
 
 pub struct MockAuctionManager;
 impl MockAuctionManager {
 	pub fn auction() -> Option<(AccountId, CurrencyId, Balance, Balance)> {
-		AUCTION.with(|v| {
-			let cloned = v.borrow().clone();
-			cloned
-		})
+		Auction::get()
 	}
 }
 impl AuctionManager<AccountId> for MockAuctionManager {
@@ -201,12 +182,12 @@ impl AuctionManager<AccountId> for MockAuctionManager {
 		amount: Self::Balance,
 		target: Self::Balance,
 	) -> DispatchResult {
-		AUCTION.with(|v| *v.borrow_mut() = Some((refund_recipient.clone(), currency_id, amount, target)));
+		Auction::mutate(|v| *v = Some((refund_recipient.clone(), currency_id, amount, target)));
 		Ok(())
 	}
 
 	fn cancel_auction(_id: Self::AuctionId) -> DispatchResult {
-		AUCTION.with(|v| *v.borrow_mut() = None);
+		Auction::mutate(|v| *v = None);
 		Ok(())
 	}
 
@@ -228,7 +209,7 @@ parameter_types! {
 	];
 }
 
-impl cdp_treasury::Config for Runtime {
+impl module_cdp_treasury::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Currencies;
 	type GetStableCurrencyId = GetStableCurrencyId;
@@ -255,7 +236,7 @@ parameter_types! {
 	];
 }
 
-impl dex::Config for Runtime {
+impl module_dex::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Currencies;
 	type GetExchangeFee = GetExchangeFee;
@@ -276,21 +257,63 @@ impl pallet_timestamp::Config for Runtime {
 	type WeightInfo = ();
 }
 
-impl evm_accounts::Config for Runtime {
+impl module_evm_accounts::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = PalletBalances;
 	type ChainId = ();
-	type AddressMapping = evm_accounts::EvmAddressMapping<Runtime>;
+	type AddressMapping = module_evm_accounts::EvmAddressMapping<Runtime>;
 	type TransferAll = Currencies;
 	type WeightInfo = ();
 }
 
-thread_local! {
-	static IS_SHUTDOWN: RefCell<bool> = RefCell::new(false);
+parameter_types! {
+	pub NetworkContractSource: EvmAddress = EvmAddress::from_str("1000000000000000000000000000000000000001").unwrap();
+}
+
+ord_parameter_types! {
+	pub const CouncilAccount: AccountId = AccountId::from([1u8; 32]);
+	pub const NetworkContractAccount: AccountId = AccountId::from([0u8; 32]);
+	pub const StorageDepositPerByte: u128 = convert_decimals_to_evm(10);
+}
+
+impl module_evm::Config for Runtime {
+	type AddressMapping = module_evm_accounts::EvmAddressMapping<Runtime>;
+	type Currency = PalletBalances;
+	type TransferAll = ();
+	type NewContractExtraBytes = ConstU32<1>;
+	type StorageDepositPerByte = StorageDepositPerByte;
+	type TxFeePerGas = ConstU128<10>;
+	type RuntimeEvent = RuntimeEvent;
+	type PrecompilesType = ();
+	type PrecompilesValue = ();
+	type GasToWeight = ();
+	type ChargeTransactionPayment = module_support::mocks::MockReservedTransactionPayment<PalletBalances>;
+	type NetworkContractOrigin = EnsureSignedBy<NetworkContractAccount, AccountId>;
+	type NetworkContractSource = NetworkContractSource;
+
+	type DeveloperDeposit = ConstU128<1000>;
+	type PublicationFee = ConstU128<200>;
+	type TreasuryAccount = TreasuryAccount;
+	type FreePublicationOrigin = EnsureSignedBy<CouncilAccount, AccountId>;
+
+	type Runner = module_evm::runner::stack::Runner<Self>;
+	type FindAuthor = ();
+	type Randomness = TestRandomness<Self>;
+	type Task = ();
+	type IdleScheduler = ();
+	type WeightInfo = ();
+}
+
+impl module_evm_bridge::Config for Runtime {
+	type EVM = EVM;
+}
+
+parameter_types! {
+	static IsShutdown: bool = false;
 }
 
 pub fn mock_shutdown() {
-	IS_SHUTDOWN.with(|v| *v.borrow_mut() = true)
+	IsShutdown::mutate(|v| *v = true)
 }
 
 pub fn liquidation_contract_addr() -> EvmAddress {
@@ -300,38 +323,38 @@ pub fn liquidation_contract_addr() -> EvmAddress {
 pub struct MockEmergencyShutdown;
 impl EmergencyShutdown for MockEmergencyShutdown {
 	fn is_shutdown() -> bool {
-		IS_SHUTDOWN.with(|v| *v.borrow_mut())
+		IsShutdown::get()
 	}
 }
 
-thread_local! {
-	static LIQUIDATED: RefCell<(EvmAddress, EvmAddress, Balance, Balance)> = RefCell::new((EvmAddress::default(), EvmAddress::default(), 0, 0));
-	static TRANSFERRED: RefCell<(EvmAddress, Balance)> = RefCell::new((EvmAddress::default(), 0));
-	static REFUNDED: RefCell<(EvmAddress, Balance)> = RefCell::new((EvmAddress::default(), 0));
-	static LIQUIDATION_RESULT: RefCell<DispatchResult> = RefCell::new(Err(Error::<Runtime>::LiquidationFailed.into()));
-	static REPAYMENT: RefCell<Option<Balance>> = RefCell::new(None);
+parameter_types! {
+	static LIQUIDATED: (EvmAddress, EvmAddress, Balance, Balance) = (EvmAddress::default(), EvmAddress::default(), 0, 0);
+	static TRANSFERRED: (EvmAddress, Balance) = (EvmAddress::default(), 0);
+	static REFUNDED: (EvmAddress, Balance) = (EvmAddress::default(), 0);
+	static LiquidationResult: DispatchResult = Err(Error::<Runtime>::LiquidationFailed.into());
+	static REPAYMENT: Option<Balance> = None;
 }
 
 pub struct MockLiquidationEvmBridge;
 impl MockLiquidationEvmBridge {
 	pub fn liquidated() -> (EvmAddress, EvmAddress, Balance, Balance) {
-		LIQUIDATED.with(|v| v.borrow().clone())
+		LIQUIDATED::get()
 	}
 	pub fn transferred() -> (EvmAddress, Balance) {
-		TRANSFERRED.with(|v| v.borrow().clone())
+		TRANSFERRED::get()
 	}
 	pub fn refunded() -> (EvmAddress, Balance) {
-		REFUNDED.with(|v| v.borrow().clone())
+		REFUNDED::get()
 	}
 	pub fn reset() {
-		LIQUIDATION_RESULT.with(|v| *v.borrow_mut() = Err(Error::<Runtime>::LiquidationFailed.into()));
-		REPAYMENT.with(|v| *v.borrow_mut() = None);
+		LiquidationResult::mutate(|v| *v = Err(Error::<Runtime>::LiquidationFailed.into()));
+		REPAYMENT::mutate(|v| *v = None);
 	}
 	pub fn set_liquidation_result(r: DispatchResult) {
-		LIQUIDATION_RESULT.with(|v| *v.borrow_mut() = r);
+		LiquidationResult::mutate(|v| *v = r);
 	}
 	pub fn set_repayment(repayment: Balance) {
-		REPAYMENT.with(|v| *v.borrow_mut() = Some(repayment));
+		REPAYMENT::mutate(|v| *v = Some(repayment));
 	}
 }
 impl LiquidationEvmBridge for MockLiquidationEvmBridge {
@@ -342,23 +365,23 @@ impl LiquidationEvmBridge for MockLiquidationEvmBridge {
 		amount: Balance,
 		min_repayment: Balance,
 	) -> DispatchResult {
-		let result = LIQUIDATION_RESULT.with(|v| v.borrow().clone());
+		let result = LiquidationResult::get();
 		if result.is_ok() {
-			let repayment = if let Some(r) = REPAYMENT.with(|v| v.borrow().clone()) {
+			let repayment = if let Some(r) = REPAYMENT::get() {
 				r
 			} else {
 				min_repayment
 			};
 			let _ = Currencies::deposit(GetStableCurrencyId::get(), &CDPEngineModule::account_id(), repayment);
 		}
-		LIQUIDATED.with(|v| *v.borrow_mut() = (collateral, repay_dest, amount, min_repayment));
+		LIQUIDATED::mutate(|v| *v = (collateral, repay_dest, amount, min_repayment));
 		result
 	}
 	fn on_collateral_transfer(_context: InvokeContext, collateral: EvmAddress, amount: Balance) {
-		TRANSFERRED.with(|v| *v.borrow_mut() = (collateral, amount));
+		TRANSFERRED::mutate(|v| *v = (collateral, amount));
 	}
 	fn on_repayment_refund(_context: InvokeContext, collateral: EvmAddress, repayment: Balance) {
-		REFUNDED.with(|v| *v.borrow_mut() = (collateral, repayment));
+		REFUNDED::mutate(|v| *v = (collateral, repayment));
 	}
 }
 
@@ -379,6 +402,7 @@ parameter_types! {
 	pub MaxSwapSlippageCompareToOracle: Ratio = Ratio::saturating_from_rational(50, 100);
 	pub MaxLiquidationContractSlippage: Ratio = Ratio::saturating_from_rational(80, 100);
 	pub const CDPEnginePalletId: PalletId = PalletId(*b"aca/cdpe");
+	pub const SettleErc20EvmOrigin: AccountId = AccountId32::new([255u8; 32]);
 }
 
 impl Config for Runtime {
@@ -403,30 +427,29 @@ impl Config for Runtime {
 	type MaxLiquidationContracts = ConstU32<10>;
 	type LiquidationEvmBridge = MockLiquidationEvmBridge;
 	type PalletId = CDPEnginePalletId;
-	type EvmAddressMapping = evm_accounts::EvmAddressMapping<Runtime>;
+	type EvmAddressMapping = module_evm_accounts::EvmAddressMapping<Runtime>;
 	type Swap = SpecificJointsSwap<DEXModule, AlternativeSwapPathJointList>;
+	type EVMBridge = module_evm_bridge::EVMBridge<Runtime>;
+	type SettleErc20EvmOrigin = SettleErc20EvmOrigin;
 	type WeightInfo = ();
 }
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
 type Block = frame_system::mocking::MockBlock<Runtime>;
 
 construct_runtime!(
-	pub enum Runtime where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
-	{
-		System: frame_system::{Pallet, Call, Storage, Config, Event<T>},
-		CDPEngineModule: cdp_engine::{Pallet, Storage, Call, Event<T>, Config, ValidateUnsigned},
-		CDPTreasuryModule: cdp_treasury::{Pallet, Storage, Call, Config, Event<T>},
-		Currencies: orml_currencies::{Pallet, Call},
-		Tokens: orml_tokens::{Pallet, Storage, Event<T>, Config<T>},
-		LoansModule: loans::{Pallet, Storage, Call, Event<T>},
-		PalletBalances: pallet_balances::{Pallet, Call, Storage, Event<T>},
-		DEXModule: dex::{Pallet, Storage, Call, Event<T>, Config<T>},
-		Timestamp: pallet_timestamp::{Pallet, Call, Storage, Inherent},
-		EvmAccounts: evm_accounts::{Pallet, Call, Storage, Event<T>},
+	pub enum Runtime {
+		System: frame_system,
+		CDPEngineModule: cdp_engine,
+		CDPTreasuryModule: module_cdp_treasury,
+		Currencies: orml_currencies,
+		Tokens: orml_tokens,
+		LoansModule: module_loans,
+		PalletBalances: pallet_balances,
+		DEXModule: module_dex,
+		Timestamp: pallet_timestamp,
+		EvmAccounts: module_evm_accounts,
+		EVM: module_evm,
+		EVMBridge: module_evm_bridge,
 	}
 );
 
@@ -463,8 +486,8 @@ impl Default for ExtBuilder {
 
 impl ExtBuilder {
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default()
-			.build_storage::<Runtime>()
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
 			.unwrap();
 
 		pallet_balances::GenesisConfig::<Runtime> {
@@ -479,7 +502,7 @@ impl ExtBuilder {
 		.assimilate_storage(&mut t)
 		.unwrap();
 
-		dex::GenesisConfig::<Runtime> {
+		module_dex::GenesisConfig::<Runtime> {
 			initial_listing_trading_pairs: vec![],
 			initial_enabled_trading_pairs: EnabledTradingPairs::get(),
 			initial_added_liquidity_pools: vec![],

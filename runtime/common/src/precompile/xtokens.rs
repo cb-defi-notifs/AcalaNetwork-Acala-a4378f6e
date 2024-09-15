@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -16,29 +16,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use super::{
-	input::{Input, InputPricer, InputT, Output, PER_PARAM_BYTES},
-	target_gas_limit,
-};
+use super::input::{Input, InputPricer, InputT, Output, PER_PARAM_BYTES};
 use crate::WeightToGas;
-use frame_support::{
-	log,
-	pallet_prelude::{Decode, Encode, IsType},
-};
+use frame_support::pallet_prelude::{Decode, Encode, IsType};
 use module_evm::{
-	precompiles::Precompile,
-	runner::state::{PrecompileFailure, PrecompileOutput, PrecompileResult},
-	Context, ExitError, ExitRevert, ExitSucceed,
+	precompiles::Precompile, ExitRevert, ExitSucceed, PrecompileFailure, PrecompileHandle, PrecompileOutput,
+	PrecompileResult,
 };
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use orml_traits::{XcmTransfer, XtokensWeightInfo};
 use orml_xtokens::XtokensWeight;
 use primitives::{Balance, CurrencyId};
+use sp_core::Get;
 use sp_runtime::{traits::Convert, RuntimeDebug};
 use sp_std::{marker::PhantomData, prelude::*};
 use xcm::{
 	prelude::*,
-	v3::{MultiAsset, MultiAssets, MultiLocation},
+	v4::{Asset, Assets, Location},
 };
 
 /// The `Xtokens` impl precompile.
@@ -75,21 +69,13 @@ where
 	<Runtime as orml_xtokens::Config>::CurrencyId: IsType<CurrencyId>,
 	<Runtime as orml_xtokens::Config>::Balance: IsType<Balance>,
 {
-	fn execute(input: &[u8], target_gas: Option<u64>, _context: &Context, _is_static: bool) -> PrecompileResult {
+	fn execute(handle: &mut impl PrecompileHandle) -> PrecompileResult {
+		let gas_cost = Pricer::<Runtime>::cost(handle)?;
+		handle.record_cost(gas_cost)?;
+
 		let input = Input::<Action, Runtime::AccountId, Runtime::AddressMapping, Runtime::Erc20InfoMapping>::new(
-			input,
-			target_gas_limit(target_gas),
+			handle.input(),
 		);
-
-		let gas_cost = Pricer::<Runtime>::cost(&input, target_gas)?;
-
-		if let Some(gas_limit) = target_gas {
-			if gas_limit < gas_cost {
-				return Err(PrecompileFailure::Error {
-					exit_status: ExitError::OutOfGas,
-				});
-			}
-		}
 
 		let action = input.action()?;
 
@@ -100,17 +86,15 @@ where
 				let amount = input.balance_at(3)?;
 
 				let dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest: MultiLocation = decode_multi_location(dest_bytes).ok_or(PrecompileFailure::Revert {
+				let dest: Location = decode_location(dest_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut weight_bytes: &[u8] = &input.bytes_at(5)?[..];
 				let weight = WeightLimit::decode(&mut weight_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid weight".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				log::debug!(
@@ -133,39 +117,33 @@ where
 					PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: Output::encode_error_msg("Xtoken Transfer failed", e),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
 					}
 				})?;
 
 				Ok(PrecompileOutput {
 					exit_status: ExitSucceed::Returned,
-					cost: gas_cost,
 					output: Output::encode_bytes_tuple(vec![&transferred.assets.encode(), &transferred.fee.encode()]),
-					logs: Default::default(),
 				})
 			}
 			Action::TransferMultiAsset => {
 				let from = input.account_id_at(1)?;
 
 				let asset_bytes: &[u8] = &input.bytes_at(2)?[..];
-				let asset: MultiAsset = decode_multi_asset(asset_bytes).ok_or(PrecompileFailure::Revert {
+				let asset: Asset = decode_asset(asset_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid multi asset".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let dest_bytes: &[u8] = &input.bytes_at(3)?[..];
-				let dest: MultiLocation = decode_multi_location(dest_bytes).ok_or(PrecompileFailure::Revert {
+				let dest: Location = decode_location(dest_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut weight_bytes: &[u8] = &input.bytes_at(4)?[..];
 				let weight = WeightLimit::decode(&mut weight_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid weight".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				log::debug!(
@@ -188,15 +166,12 @@ where
 					PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: Output::encode_error_msg("Xtoken TransferMultiAsset failed", e),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
 					}
 				})?;
 
 				Ok(PrecompileOutput {
 					exit_status: ExitSucceed::Returned,
-					cost: gas_cost,
 					output: Output::encode_bytes_tuple(vec![&transferred.assets.encode(), &transferred.fee.encode()]),
-					logs: Default::default(),
 				})
 			}
 			Action::TransferWithFee => {
@@ -206,17 +181,15 @@ where
 				let fee = input.balance_at(4)?;
 
 				let dest_bytes: &[u8] = &input.bytes_at(5)?[..];
-				let dest: MultiLocation = decode_multi_location(dest_bytes).ok_or(PrecompileFailure::Revert {
+				let dest: Location = decode_location(dest_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut weight_bytes: &[u8] = &input.bytes_at(6)?[..];
 				let weight = WeightLimit::decode(&mut weight_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid weight".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				log::debug!(
@@ -239,46 +212,39 @@ where
 					PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: Output::encode_error_msg("Xtoken TransferWithFee failed", e),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
 					}
 				})?;
 
 				Ok(PrecompileOutput {
 					exit_status: ExitSucceed::Returned,
-					cost: gas_cost,
 					output: Output::encode_bytes_tuple(vec![&transferred.assets.encode(), &transferred.fee.encode()]),
-					logs: Default::default(),
 				})
 			}
 			Action::TransferMultiAssetWithFee => {
 				let from = input.account_id_at(1)?;
 
 				let asset_bytes: &[u8] = &input.bytes_at(2)?[..];
-				let asset: MultiAsset = decode_multi_asset(asset_bytes).ok_or(PrecompileFailure::Revert {
+				let asset: Asset = decode_asset(asset_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid multi asset".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let fee_bytes: &[u8] = &input.bytes_at(3)?[..];
-				let fee: MultiAsset = decode_multi_asset(fee_bytes).ok_or(PrecompileFailure::Revert {
+				let fee: Asset = decode_asset(fee_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid fee asset".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest: MultiLocation = decode_multi_location(dest_bytes).ok_or(PrecompileFailure::Revert {
+				let dest: Location = decode_location(dest_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut weight_bytes: &[u8] = &input.bytes_at(5)?[..];
 				let weight = WeightLimit::decode(&mut weight_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid weight".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				log::debug!(
@@ -301,15 +267,12 @@ where
 					PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: Output::encode_error_msg("Xtoken TransferMultiAssetWithFee failed", e),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
 					}
 				})?;
 
 				Ok(PrecompileOutput {
 					exit_status: ExitSucceed::Returned,
-					cost: gas_cost,
 					output: Output::encode_bytes_tuple(vec![&transferred.assets.encode(), &transferred.fee.encode()]),
-					logs: Default::default(),
 				})
 			}
 			Action::TransferMultiCurrencies => {
@@ -319,6 +282,13 @@ where
 					.saturating_div(PER_PARAM_BYTES)
 					.saturating_add(1);
 				let currencies_len = input.u32_at(currencies_index)? as usize;
+
+				if currencies_len > <Runtime as orml_xtokens::Config>::MaxAssetsForTransfer::get() {
+					return Err(PrecompileFailure::Revert {
+						exit_status: ExitRevert::Reverted,
+						output: "invalid currencies size".into(),
+					});
+				}
 
 				let mut currencies = Vec::with_capacity(currencies_len);
 				for i in 0..currencies_len {
@@ -332,17 +302,15 @@ where
 				let fee_item = input.u32_at(3)?;
 
 				let dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest: MultiLocation = decode_multi_location(dest_bytes).ok_or(PrecompileFailure::Revert {
+				let dest: Location = decode_location(dest_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut weight_bytes: &[u8] = &input.bytes_at(5)?[..];
 				let weight = WeightLimit::decode(&mut weight_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid weight".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				log::debug!(
@@ -365,46 +333,39 @@ where
 					PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: Output::encode_error_msg("Xtoken TransferMultiCurrencies failed", e),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
 					}
 				})?;
 
 				Ok(PrecompileOutput {
 					exit_status: ExitSucceed::Returned,
-					cost: gas_cost,
 					output: Output::encode_bytes_tuple(vec![&transferred.assets.encode(), &transferred.fee.encode()]),
-					logs: Default::default(),
 				})
 			}
 			Action::TransferMultiAssets => {
 				let from = input.account_id_at(1)?;
 
 				let assets_bytes: &[u8] = &input.bytes_at(2)?[..];
-				let assets: MultiAssets = decode_multi_assets(assets_bytes).ok_or(PrecompileFailure::Revert {
+				let assets: Assets = decode_assets(assets_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid multi assets".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let fee_item = input.u32_at(3)?;
-				let fee: &MultiAsset = assets.get(fee_item as usize).ok_or(PrecompileFailure::Revert {
+				let fee: &Asset = assets.get(fee_item as usize).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid fee index".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest: MultiLocation = decode_multi_location(dest_bytes).ok_or(PrecompileFailure::Revert {
+				let dest: Location = decode_location(dest_bytes).ok_or(PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut weight_bytes: &[u8] = &input.bytes_at(5)?[..];
 				let weight = WeightLimit::decode(&mut weight_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid weight".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				log::debug!(
@@ -427,31 +388,28 @@ where
 					PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: Output::encode_error_msg("Xtoken TransferMultiAssets failed", e),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
 					}
 				})?;
 
 				Ok(PrecompileOutput {
 					exit_status: ExitSucceed::Returned,
-					cost: gas_cost,
 					output: Output::encode_bytes_tuple(vec![&transferred.assets.encode(), &transferred.fee.encode()]),
-					logs: Default::default(),
 				})
 			}
 		}
 	}
 }
 
-fn decode_multi_asset(mut bytes: &[u8]) -> Option<MultiAsset> {
-	VersionedMultiAsset::decode(&mut bytes).ok()?.try_into().ok()
+fn decode_asset(mut bytes: &[u8]) -> Option<Asset> {
+	VersionedAsset::decode(&mut bytes).ok()?.try_into().ok()
 }
 
-fn decode_multi_assets(mut bytes: &[u8]) -> Option<MultiAssets> {
-	VersionedMultiAssets::decode(&mut bytes).ok()?.try_into().ok()
+fn decode_assets(mut bytes: &[u8]) -> Option<Assets> {
+	VersionedAssets::decode(&mut bytes).ok()?.try_into().ok()
 }
 
-fn decode_multi_location(mut bytes: &[u8]) -> Option<MultiLocation> {
-	VersionedMultiLocation::decode(&mut bytes).ok()?.try_into().ok()
+fn decode_location(mut bytes: &[u8]) -> Option<Location> {
+	VersionedLocation::decode(&mut bytes).ok()?.try_into().ok()
 }
 
 struct Pricer<R>(PhantomData<R>);
@@ -464,10 +422,11 @@ where
 {
 	const BASE_COST: u64 = 200;
 
-	fn cost(
-		input: &Input<Action, Runtime::AccountId, Runtime::AddressMapping, Runtime::Erc20InfoMapping>,
-		target_gas: Option<u64>,
-	) -> Result<u64, PrecompileFailure> {
+	fn cost(handle: &mut impl PrecompileHandle) -> Result<u64, PrecompileFailure> {
+		let input = Input::<Action, Runtime::AccountId, Runtime::AddressMapping, Runtime::Erc20InfoMapping>::new(
+			handle.input(),
+		);
+
 		let action = input.action()?;
 
 		let cost: u64 = match action {
@@ -478,10 +437,9 @@ where
 				let amount = input.balance_at(3)?;
 
 				let mut dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest = VersionedMultiLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
+				let dest = VersionedLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let weight = XtokensWeight::<Runtime>::weight_of_transfer(currency_id.into(), amount.into(), &dest);
@@ -492,17 +450,15 @@ where
 			}
 			Action::TransferMultiAsset => {
 				let mut asset_bytes: &[u8] = &input.bytes_at(2)?[..];
-				let asset = VersionedMultiAsset::decode(&mut asset_bytes).map_err(|_| PrecompileFailure::Revert {
+				let asset = VersionedAsset::decode(&mut asset_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid multi asset".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut dest_bytes: &[u8] = &input.bytes_at(3)?[..];
-				let dest = VersionedMultiLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
+				let dest = VersionedLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let weight = XtokensWeight::<Runtime>::weight_of_transfer_multiasset(&asset, &dest);
@@ -516,10 +472,9 @@ where
 				let amount = input.balance_at(3)?;
 
 				let mut dest_bytes: &[u8] = &input.bytes_at(5)?[..];
-				let dest = VersionedMultiLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
+				let dest = VersionedLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let weight = XtokensWeight::<Runtime>::weight_of_transfer(currency_id.into(), amount.into(), &dest);
@@ -530,17 +485,15 @@ where
 			}
 			Action::TransferMultiAssetWithFee => {
 				let mut asset_bytes: &[u8] = &input.bytes_at(2)?[..];
-				let asset = VersionedMultiAsset::decode(&mut asset_bytes).map_err(|_| PrecompileFailure::Revert {
+				let asset = VersionedAsset::decode(&mut asset_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid multi asset".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let mut dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest = VersionedMultiLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
+				let dest = VersionedLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let weight = XtokensWeight::<Runtime>::weight_of_transfer_multiasset(&asset, &dest);
@@ -553,6 +506,14 @@ where
 					.saturating_div(PER_PARAM_BYTES)
 					.saturating_add(1);
 				let currencies_len = input.u32_at(currencies_index)? as usize;
+
+				if currencies_len > <Runtime as orml_xtokens::Config>::MaxAssetsForTransfer::get() {
+					return Err(PrecompileFailure::Revert {
+						exit_status: ExitRevert::Reverted,
+						output: "invalid currencies size".into(),
+					});
+				}
+
 				let mut currencies = Vec::with_capacity(currencies_len);
 				let mut read_currency: u64 = 0;
 
@@ -568,10 +529,9 @@ where
 				let fee_item = input.u32_at(3)?;
 
 				let mut dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest = VersionedMultiLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
+				let dest = VersionedLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let weight =
@@ -583,20 +543,17 @@ where
 			}
 			Action::TransferMultiAssets => {
 				let mut assets_bytes: &[u8] = &input.bytes_at(2)?[..];
-				let assets =
-					VersionedMultiAssets::decode(&mut assets_bytes).map_err(|_| PrecompileFailure::Revert {
-						exit_status: ExitRevert::Reverted,
-						output: "invalid multi asset".into(),
-						cost: target_gas_limit(target_gas).unwrap_or_default(),
-					})?;
+				let assets = VersionedAssets::decode(&mut assets_bytes).map_err(|_| PrecompileFailure::Revert {
+					exit_status: ExitRevert::Reverted,
+					output: "invalid multi asset".into(),
+				})?;
 
 				let fee_item = input.u32_at(3)?;
 
 				let mut dest_bytes: &[u8] = &input.bytes_at(4)?[..];
-				let dest = VersionedMultiLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
+				let dest = VersionedLocation::decode(&mut dest_bytes).map_err(|_| PrecompileFailure::Revert {
 					exit_status: ExitRevert::Reverted,
 					output: "invalid dest".into(),
-					cost: target_gas_limit(target_gas).unwrap_or_default(),
 				})?;
 
 				let weight = XtokensWeight::<Runtime>::weight_of_transfer_multiassets(&assets, &fee_item, &dest);
@@ -615,7 +572,8 @@ mod tests {
 	use crate::precompile::mock::{alice_evm_addr, new_test_ext, Test, BOB};
 	use frame_support::weights::Weight;
 	use hex_literal::hex;
-	use module_evm::ExitRevert;
+	use module_evm::{precompiles::tests::MockPrecompileHandle, Context, ExitRevert};
+
 	use orml_utilities::with_transaction_result;
 
 	type XtokensPrecompile = crate::precompile::XtokensPrecompile<Test>;
@@ -628,19 +586,19 @@ mod tests {
 				caller: alice_evm_addr(),
 				apparent_value: Default::default(),
 			};
-			let dest: VersionedMultiLocation = VersionedMultiLocation::V3(MultiLocation::new(
+			let dest: VersionedLocation = VersionedLocation::V4(Location::new(
 				1,
-				X2(
+				[
 					Parachain(2002),
 					Junction::AccountId32 {
 						network: None,
 						id: BOB.into(),
 					},
-				),
+				],
 			));
 			assert_eq!(
 				dest.encode(),
-				hex!("03010200491f01000202020202020202020202020202020202020202020202020202020202020202")
+				hex!("04010200491f01000202020202020202020202020202020202020202020202020202020202020202")
 			);
 
 			let weight = WeightLimit::Unlimited;
@@ -675,11 +633,10 @@ mod tests {
 
 			let _ = with_transaction_result(|| {
 				assert_eq!(
-					XtokensPrecompile::execute(&input, Some(10_000), &context, false),
+					XtokensPrecompile::execute(&mut MockPrecompileHandle::new(&input, Some(10_000), &context, false)),
 					Err(PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: "Xtoken Transfer failed: NotCrossChainTransferableCurrency".into(),
-						cost: 9000,
 					})
 				);
 				Ok(())
@@ -695,10 +652,10 @@ mod tests {
 				caller: alice_evm_addr(),
 				apparent_value: Default::default(),
 			};
-			let asset: VersionedMultiAsset = (Here, 1_000_000_000_000u128).into();
-			assert_eq!(asset.encode(), hex!("0300000000070010a5d4e8"));
+			let asset: VersionedAsset = (Here, 1_000_000_000_000u128).into();
+			assert_eq!(asset.encode(), hex!("04000000070010a5d4e8"));
 
-			let dest: VersionedMultiLocation = VersionedMultiLocation::V3(
+			let dest: VersionedLocation = VersionedLocation::V4(
 				Junction::AccountId32 {
 					network: None,
 					id: BOB.into(),
@@ -707,7 +664,7 @@ mod tests {
 			);
 			assert_eq!(
 				dest.encode(),
-				hex!("03000101000202020202020202020202020202020202020202020202020202020202020202")
+				hex!("04000101000202020202020202020202020202020202020202020202020202020202020202")
 			);
 
 			let weight = WeightLimit::Limited(Weight::from_parts(100_000, 64 * 1024));
@@ -741,11 +698,10 @@ mod tests {
 
 			let _ = with_transaction_result(|| {
 				assert_eq!(
-					XtokensPrecompile::execute(&input, Some(10_000), &context, false),
+					XtokensPrecompile::execute(&mut MockPrecompileHandle::new(&input, Some(10_000), &context, false)),
 					Err(PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: "Xtoken TransferMultiAsset failed: InvalidDest".into(),
-						cost: 9000,
 					})
 				);
 				Ok(())
@@ -761,7 +717,7 @@ mod tests {
 				caller: alice_evm_addr(),
 				apparent_value: Default::default(),
 			};
-			let dest: VersionedMultiLocation = VersionedMultiLocation::V3(
+			let dest: VersionedLocation = VersionedLocation::V4(
 				Junction::AccountId32 {
 					network: None,
 					id: BOB.into(),
@@ -770,7 +726,7 @@ mod tests {
 			);
 			assert_eq!(
 				dest.encode(),
-				hex!("03000101000202020202020202020202020202020202020202020202020202020202020202")
+				hex!("04000101000202020202020202020202020202020202020202020202020202020202020202")
 			);
 
 			let weight = WeightLimit::Limited(Weight::from_parts(100_000, 64 * 1024));
@@ -804,11 +760,10 @@ mod tests {
 
 			let _ = with_transaction_result(|| {
 				assert_eq!(
-					XtokensPrecompile::execute(&input, Some(10_000), &context, false),
+					XtokensPrecompile::execute(&mut MockPrecompileHandle::new(&input, Some(10_000), &context, false)),
 					Err(PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: "Xtoken TransferWithFee failed: NotCrossChainTransferableCurrency".into(),
-						cost: 9000,
 					})
 				);
 				Ok(())
@@ -824,13 +779,13 @@ mod tests {
 				caller: alice_evm_addr(),
 				apparent_value: Default::default(),
 			};
-			let asset: VersionedMultiAsset = (Here, 1_000_000_000_000u128).into();
-			assert_eq!(asset.encode(), hex!("0300000000070010a5d4e8"));
+			let asset: VersionedAsset = (Here, 1_000_000_000_000u128).into();
+			assert_eq!(asset.encode(), hex!("04000000070010a5d4e8"));
 
-			let fee: VersionedMultiAsset = (Here, 1_000_000).into();
-			assert_eq!(fee.encode(), hex!("030000000002093d00"));
+			let fee: VersionedAsset = (Here, 1_000_000).into();
+			assert_eq!(fee.encode(), hex!("0400000002093d00"));
 
-			let dest: VersionedMultiLocation = VersionedMultiLocation::V3(
+			let dest: VersionedLocation = VersionedLocation::V4(
 				Junction::AccountId32 {
 					network: None,
 					id: BOB.into(),
@@ -839,7 +794,7 @@ mod tests {
 			);
 			assert_eq!(
 				dest.encode(),
-				hex!("03000101000202020202020202020202020202020202020202020202020202020202020202")
+				hex!("04000101000202020202020202020202020202020202020202020202020202020202020202")
 			);
 
 			let weight = WeightLimit::Limited(Weight::from_parts(100_000, 64 * 1024));
@@ -879,11 +834,10 @@ mod tests {
 
 			let _ = with_transaction_result(|| {
 				assert_eq!(
-					XtokensPrecompile::execute(&input, Some(10_000), &context, false),
+					XtokensPrecompile::execute(&mut MockPrecompileHandle::new(&input, Some(10_000), &context, false)),
 					Err(PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: "Xtoken TransferMultiAssetWithFee failed: InvalidDest".into(),
-						cost: 9000,
 					})
 				);
 				Ok(())
@@ -899,7 +853,7 @@ mod tests {
 				caller: alice_evm_addr(),
 				apparent_value: Default::default(),
 			};
-			let dest: VersionedMultiLocation = VersionedMultiLocation::V3(
+			let dest: VersionedLocation = VersionedLocation::V4(
 				Junction::AccountId32 {
 					network: None,
 					id: BOB.into(),
@@ -908,7 +862,7 @@ mod tests {
 			);
 			assert_eq!(
 				dest.encode(),
-				hex!("03000101000202020202020202020202020202020202020202020202020202020202020202")
+				hex!("04000101000202020202020202020202020202020202020202020202020202020202020202")
 			);
 
 			let weight = WeightLimit::Limited(Weight::from_parts(100_000, 64 * 1024));
@@ -953,11 +907,10 @@ mod tests {
 
 			let _ = with_transaction_result(|| {
 				assert_eq!(
-					XtokensPrecompile::execute(&input, Some(10_000), &context, false),
+					XtokensPrecompile::execute(&mut MockPrecompileHandle::new(&input, Some(10_000), &context, false)),
 					Err(PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: "Xtoken TransferMultiCurrencies failed: NotCrossChainTransferableCurrency".into(),
-						cost: 9000,
 					})
 				);
 				Ok(())
@@ -973,11 +926,10 @@ mod tests {
 				caller: alice_evm_addr(),
 				apparent_value: Default::default(),
 			};
-			let assets: VersionedMultiAssets =
-				VersionedMultiAssets::from(MultiAssets::from((Here, 1_000_000_000_000u128)));
-			assert_eq!(assets.encode(), hex!("030400000000070010a5d4e8"));
+			let assets: VersionedAssets = VersionedAssets::from(Assets::from((Here, 1_000_000_000_000u128)));
+			assert_eq!(assets.encode(), hex!("0404000000070010a5d4e8"));
 
-			let dest: VersionedMultiLocation = VersionedMultiLocation::V3(
+			let dest: VersionedLocation = VersionedLocation::V4(
 				Junction::AccountId32 {
 					network: None,
 					id: BOB.into(),
@@ -986,7 +938,7 @@ mod tests {
 			);
 			assert_eq!(
 				dest.encode(),
-				hex!("03000101000202020202020202020202020202020202020202020202020202020202020202")
+				hex!("04000101000202020202020202020202020202020202020202020202020202020202020202")
 			);
 
 			let weight = WeightLimit::Limited(Weight::from_parts(100_000, 64 * 1024));
@@ -1022,11 +974,10 @@ mod tests {
 
 			let _ = with_transaction_result(|| {
 				assert_eq!(
-					XtokensPrecompile::execute(&input, Some(10_000), &context, false),
+					XtokensPrecompile::execute(&mut MockPrecompileHandle::new(&input, Some(10_000), &context, false)),
 					Err(PrecompileFailure::Revert {
 						exit_status: ExitRevert::Reverted,
 						output: "Xtoken TransferMultiAssets failed: InvalidDest".into(),
-						cost: 9000,
 					})
 				);
 				Ok(())

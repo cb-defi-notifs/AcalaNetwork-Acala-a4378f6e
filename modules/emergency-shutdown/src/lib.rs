@@ -1,6 +1,6 @@
 // This file is part of Acala.
 
-// Copyright (C) 2020-2023 Acala Foundation.
+// Copyright (C) 2020-2024 Acala Foundation.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -32,12 +32,12 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::unused_unit)]
 
-use frame_support::{pallet_prelude::*, transactional};
+use frame_support::pallet_prelude::*;
 use frame_system::{ensure_signed, pallet_prelude::*};
+use module_support::{AuctionManager, CDPTreasury, EmergencyShutdown, LockablePrice, Ratio};
 use primitives::{Balance, CurrencyId};
 use sp_runtime::{traits::Zero, FixedPointNumber};
 use sp_std::prelude::*;
-use support::{AuctionManager, CDPTreasury, EmergencyShutdown, LockablePrice, Ratio};
 
 mod mock;
 mod tests;
@@ -51,7 +51,7 @@ pub mod module {
 	use super::*;
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config + loans::Config {
+	pub trait Config: frame_system::Config + module_loans::Config {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The list of valid collateral currency types
@@ -93,9 +93,9 @@ pub mod module {
 	#[pallet::generate_deposit(fn deposit_event)]
 	pub enum Event<T: Config> {
 		/// Emergency shutdown occurs.
-		Shutdown { block_number: T::BlockNumber },
+		Shutdown { block_number: BlockNumberFor<T> },
 		/// The final redemption opened.
-		OpenRefund { block_number: T::BlockNumber },
+		OpenRefund { block_number: BlockNumberFor<T> },
 		/// Refund info.
 		Refund {
 			who: T::AccountId,
@@ -122,7 +122,7 @@ pub mod module {
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {}
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -131,7 +131,6 @@ pub mod module {
 		/// The dispatch origin of this call must be `ShutdownOrigin`.
 		#[pallet::call_index(0)]
 		#[pallet::weight((T::WeightInfo::emergency_shutdown(T::CollateralCurrencyIds::get().len() as u32), DispatchClass::Operational))]
-		#[transactional]
 		pub fn emergency_shutdown(origin: OriginFor<T>) -> DispatchResult {
 			T::ShutdownOrigin::ensure_origin(origin)?;
 			ensure!(!Self::is_shutdown(), Error::<T>::AlreadyShutdown);
@@ -157,7 +156,6 @@ pub mod module {
 		/// The dispatch origin of this call must be `ShutdownOrigin`.
 		#[pallet::call_index(1)]
 		#[pallet::weight((T::WeightInfo::open_collateral_refund(), DispatchClass::Operational))]
-		#[transactional]
 		pub fn open_collateral_refund(origin: OriginFor<T>) -> DispatchResult {
 			T::ShutdownOrigin::ensure_origin(origin)?;
 			ensure!(Self::is_shutdown(), Error::<T>::MustAfterShutdown); // must after shutdown
@@ -175,7 +173,7 @@ pub mod module {
 				);
 				// there's on debit in CDP
 				ensure!(
-					<loans::Pallet<T>>::total_positions(currency_id).debit.is_zero(),
+					<module_loans::Pallet<T>>::total_positions(currency_id).debit.is_zero(),
 					Error::<T>::ExistUnhandledDebit,
 				);
 			}
@@ -193,7 +191,6 @@ pub mod module {
 		/// - `amount`: stable currency amount used to refund.
 		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::refund_collaterals(T::CollateralCurrencyIds::get().len() as u32))]
-		#[transactional]
 		pub fn refund_collaterals(origin: OriginFor<T>, #[pallet::compact] amount: Balance) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(Self::can_refund(), Error::<T>::CanNotRefund);
